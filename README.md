@@ -29,6 +29,35 @@ A LangGraph-based agentic assistant that classifies user intent, fans out to up 
 
 For multi-intent queries (e.g., *"My father has CKD; book a nephrologist AND summarize latest treatments"*), the classifier returns both intents and the graph fans out — both branches run in parallel and converge on the composer. LangGraph waits for all incoming edges before executing a node, so the merge is implicit. State fields with multiple writers (`tool_log`, `sources`, `intents`, `error`) use `Annotated[T, reducer]` to avoid the "last write wins" silent-data-loss footgun.
 
+## Screenshots
+
+### Patient view — multi-intent canonical query
+*"My 70-year-old father has chronic kidney disease. Book a nephrologist for him and summarize the latest treatment methods."*
+
+Routes to **booking** + **medical_search** in parallel; composer combines the appointment confirmation with cited medical sources.
+
+![Patient view — multi-intent response](screenshots/02_multi_intent_response.png)
+
+### Patient view — empty state with preview panel
+First-time users see a preview of what the right-hand state panel will show (intents, appointment JSON, tool log) so the layout is anchored before the first query.
+
+![Patient view — empty with state preview](screenshots/01_patient_view_empty.png)
+
+### Patient view — state trace expanded
+Live tool log surfaces every node's input args + result, JSON-formatted. Plus a sources panel with citations from the medical search.
+
+![Patient view — state trace and tool log](screenshots/03_state_trace_expanded.png)
+
+### Doctor View — clinician dashboard
+KPI strip (totals, today's bookings, slot utilization, top specialty) + today's schedule + upcoming bookings. Pretty dates and Title-Case specialties.
+
+![Doctor View — KPIs and today's schedule](screenshots/05_doctor_view_dashboard.png)
+
+### Single-intent — patient history
+Routes to **history** alone; combines structured EHR record with FAISS-retrieved PDF chunks; LLM summarizes with `[record]` / `[report]` source markers.
+
+![Patient view — history query](screenshots/04_history_query.png)
+
 ## Quick start
 
 ```bash
