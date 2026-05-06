@@ -1,0 +1,28 @@
+# Secrets — never commit
+.env
+
+# Generated artifacts
+data/*.sqlite
+data/*.sqlite-wal
+data/*.sqlite-shm
+data/*.index
+data/*.json
+data/*.bin
+data/*.npy
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Mac
+.DS_Store
+**/.DS_Store
+
+# Eval outputs (keep templates, not runs)
+eval/results_*.json
+
+# Streamlit cache
+.streamlit/secrets.toml

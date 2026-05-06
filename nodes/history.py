@@ -1,0 +1,102 @@
+"""History node — retrieves and summarizes a patient's medical history.
+
+Combines the structured EHR record with FAISS-retrieved chunks from the
+patient's PDF reports, then asks the LLM for a concise summary.
+"""
+from __future__ import annotations
+
+import logging
+
+from config import load_settings
+from llm import LLMUnavailable, chat
+from prompts import HISTORY_SUMMARY_PROMPT
+from state import HealthcareState
+from tools.ehr_db import find_patient_by_name
+from tools.vector_index import search_index
+
+logger = logging.getLogger(__name__)
+
+
+def history_node(state: HealthcareState) -> dict:
+    settings = load_settings()
+    patient_name = state.get("patient_name")
+
+    if not patient_name:
+        return {
+            "history_summary": "No patient was specified; cannot retrieve history.",
+            "tool_log": [{
+                "node": "history",
+                "result": "skipped",
+                "reason": "no patient_name",
+            }],
+        }
+
+    # 1. Look up structured record
+    record = find_patient_by_name(settings.ehr_db_path, patient_name)
+    record_block = ""
+    if record:
+        parts = [f"Name: {record['name']}"]
+        if record.get("age"):
+            parts.append(f"Age: {record['age']}")
+        if record.get("gender"):
+            parts.append(f"Gender: {record['gender']}")
+        if record.get("summary"):
+            parts.append(f"Summary: {record['summary']}")
+        if record.get("address"):
+            parts.append(f"Address: {record['address']}")
+        record_block = "\n".join(parts)
+    else:
+        record_block = f"No structured record found for {patient_name}."
+
+    # 2. Search FAISS for matching chunks
+    pdf_excerpts = ""
+    chunks = []
+    try:
+        chunks = search_index(
+            patient_name,
+            settings.faiss_index_path,
+            settings.faiss_chunks_path,
+            top_k=4,
+        )
+        if chunks:
+            pdf_excerpts = "\n\n".join(
+                f"[from {c['doc']}, score={c['score']:.2f}]\n{c['text'][:500]}"
+                for c in chunks
+            )
+    except Exception as exc:
+        logger.warning("FAISS lookup failed: %s", exc)
+        pdf_excerpts = "(No PDF excerpts available)"
+
+    # 3. Ask LLM to summarize
+    user_block = (
+        f"=== Structured record ===\n{record_block}\n\n"
+        f"=== Report excerpts ===\n{pdf_excerpts or '(none retrieved)'}\n\n"
+        f"Now summarize this patient's history."
+    )
+
+    try:
+        summary = chat(
+            messages=[
+                {"role": "system", "content": HISTORY_SUMMARY_PROMPT},
+                {"role": "user", "content": user_block},
+            ],
+            temperature=0.0,
+            max_tokens=300,
+        ).strip()
+    except LLMUnavailable as exc:
+        logger.warning("History summarizer unavailable: %s — returning raw record", exc)
+        summary = (
+            "(No LLM summary available; configure GROQ_API_KEY or OPENAI_API_KEY)\n\n"
+            f"Record:\n{record_block}"
+        )
+
+    return {
+        "history_summary": summary,
+        "tool_log": [{
+            "node": "history",
+            "tool": "find_patient_by_name+search_index",
+            "patient_name": patient_name,
+            "record_found": bool(record),
+            "pdf_chunks_retrieved": len(chunks),
+        }],
+    }

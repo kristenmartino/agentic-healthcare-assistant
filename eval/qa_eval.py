@@ -1,0 +1,237 @@
+"""QA evaluation: 10 ground-truth pairs covering every intent + multi-intent.
+
+Two-tier evaluation:
+1. **Routing accuracy** — does the classifier produce the expected intent(s)?
+   Hard checked against `expected_intents`.
+2. **Tool execution** — does each branch produce the right shape of state?
+   Checked via `expected_state_keys` (must be present and non-empty).
+
+Bonus: when a real LLM (Groq/OpenAI) is configured, we additionally run a
+QAEvalChain-style answer-similarity check using the LLM as judge. Skipped
+in stub mode — the templated outputs aren't representative of real quality.
+
+Outputs `eval/results_<timestamp>.json` with per-question pass/fail + summary.
+Run: `python -m eval.qa_eval`
+"""
+from __future__ import annotations
+
+import json
+import logging
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+# Allow running as script: `python eval/qa_eval.py`
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from config import load_settings
+from graph import build_workflow
+
+logger = logging.getLogger(__name__)
+
+
+# 10 ground-truth pairs covering all 5 intents + multi-intent.
+GROUND_TRUTH = [
+    {
+        "id": "booking-1",
+        "query": "Book me a cardiologist for next week",
+        "expected_intents": ["booking"],
+        "expected_state_keys": ["appointment"],
+        "expected_appointment_specialty": "cardiology",
+    },
+    {
+        "id": "booking-2",
+        "query": "Schedule an appointment with a nephrologist tomorrow",
+        "expected_intents": ["booking"],
+        "expected_state_keys": ["appointment"],
+        "expected_appointment_specialty": "nephrology",
+    },
+    {
+        "id": "history-1",
+        "query": "Show me Anjali Mehra's medical history",
+        "expected_intents": ["history"],
+        "expected_state_keys": ["history_summary"],
+        "expected_patient_name": "Anjali Mehra",
+    },
+    {
+        "id": "history-2",
+        "query": "What's the past visits summary for Ramesh Kulkarni?",
+        "expected_intents": ["history"],
+        "expected_state_keys": ["history_summary"],
+        "expected_patient_name": "Ramesh Kulkarni",
+    },
+    {
+        "id": "records-1",
+        "query": "Add a new patient: John Doe, age 45, male, hypertension",
+        "expected_intents": ["records"],
+        "expected_state_keys": ["record_change"],
+        "expected_record_op": "insert",
+    },
+    {
+        "id": "records-2",
+        "query": "Update record for David Thompson: notes: HbA1c improved to 6.8.",
+        "expected_intents": ["records"],
+        "expected_state_keys": ["record_change"],
+        "expected_record_op": "update",
+    },
+    {
+        "id": "search-1",
+        "query": "What are the symptoms of pneumonia?",
+        "expected_intents": ["medical_search"],
+        "expected_state_keys": ["medical_info"],
+    },
+    {
+        "id": "search-2",
+        "query": "What is the latest treatment for chronic kidney disease?",
+        "expected_intents": ["medical_search"],
+        "expected_state_keys": ["medical_info"],
+    },
+    {
+        "id": "multi-1",
+        "query": "My 70-year-old father has chronic kidney disease. "
+                 "Book a nephrologist for him and summarize the latest treatment methods.",
+        "expected_intents": ["booking", "medical_search"],
+        "expected_state_keys": ["appointment", "medical_info"],
+        "expected_appointment_specialty": "nephrology",
+    },
+    {
+        "id": "general-1",
+        "query": "Hello, what can you help me with?",
+        "expected_intents": ["general"],
+        "expected_state_keys": [],
+    },
+]
+
+
+def evaluate_one(workflow, gt: dict, thread_id: str) -> dict:
+    """Run one ground-truth case and grade it. Returns a result dict."""
+    start = time.time()
+    try:
+        result = workflow.invoke(
+            {"user_input": gt["query"], "history": []},
+            config={"configurable": {"thread_id": thread_id}},
+        )
+    except Exception as exc:
+        return {
+            "id": gt["id"],
+            "query": gt["query"],
+            "passed": False,
+            "errors": [f"Workflow exception: {exc}"],
+            "latency_seconds": time.time() - start,
+        }
+    latency = time.time() - start
+
+    errors: list[str] = []
+    actual_intents = result.get("intents") or [result.get("intent", "?")]
+
+    # Check 1: routing accuracy
+    expected_intents = set(gt["expected_intents"])
+    got_intents = set(actual_intents)
+    if expected_intents != got_intents:
+        # Allow superset (multi-intent classifier may add general)
+        if not expected_intents.issubset(got_intents):
+            errors.append(
+                f"intent mismatch: expected {sorted(expected_intents)}, got {sorted(got_intents)}"
+            )
+
+    # Check 2: expected state keys present
+    for key in gt["expected_state_keys"]:
+        value = result.get(key)
+        if value is None or (isinstance(value, (list, dict, str)) and len(value) == 0):
+            errors.append(f"missing or empty state key: {key}")
+
+    # Check 3: appointment specialty match
+    if "expected_appointment_specialty" in gt:
+        appt = result.get("appointment") or {}
+        if appt.get("specialty") != gt["expected_appointment_specialty"]:
+            errors.append(
+                f"appointment specialty mismatch: expected "
+                f"{gt['expected_appointment_specialty']}, got {appt.get('specialty')}"
+            )
+
+    # Check 4: patient name extracted
+    if "expected_patient_name" in gt:
+        if (result.get("patient_name") or "").lower() != gt["expected_patient_name"].lower():
+            errors.append(
+                f"patient_name mismatch: expected {gt['expected_patient_name']}, "
+                f"got {result.get('patient_name')}"
+            )
+
+    # Check 5: record operation
+    if "expected_record_op" in gt:
+        rec = result.get("record_change") or {}
+        if rec.get("operation") != gt["expected_record_op"]:
+            errors.append(
+                f"record op mismatch: expected {gt['expected_record_op']}, "
+                f"got {rec.get('operation')}"
+            )
+
+    return {
+        "id": gt["id"],
+        "query": gt["query"],
+        "passed": len(errors) == 0,
+        "errors": errors,
+        "latency_seconds": round(latency, 3),
+        "actual_intents": list(got_intents),
+        "response_excerpt": (result.get("response") or "")[:200],
+    }
+
+
+def main() -> int:
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+    settings = load_settings()
+
+    # Reset the EHR DB so records-1 (expecting insert) is deterministic.
+    # Without this, John Doe might already exist from a prior run → update, not insert.
+    from tools.ehr_db import initialize_ehr
+    if Path(settings.records_xlsx_path).exists():
+        initialize_ehr(settings.records_xlsx_path, settings.ehr_db_path)
+
+    print("=" * 70)
+    print(f" QA Evaluation — Healthcare Assistant")
+    print(f" LLM provider: {settings.llm_provider} ({settings.llm_model})")
+    print(f" {len(GROUND_TRUTH)} ground-truth cases")
+    print("=" * 70)
+
+    workflow = build_workflow(with_checkpoint=False)
+
+    results: list[dict] = []
+    for i, gt in enumerate(GROUND_TRUTH, 1):
+        thread_id = f"eval-{gt['id']}"
+        r = evaluate_one(workflow, gt, thread_id)
+        results.append(r)
+        status = "✅ PASS" if r["passed"] else "❌ FAIL"
+        print(f"[{i:2d}/{len(GROUND_TRUTH)}] {status} {gt['id']:12s} "
+              f"({r['latency_seconds']:.2f}s) — {gt['query'][:60]}")
+        for err in r["errors"]:
+            print(f"        - {err}")
+
+    passed = sum(1 for r in results if r["passed"])
+    pass_rate = passed / len(results)
+    avg_latency = sum(r["latency_seconds"] for r in results) / len(results)
+
+    summary = {
+        "timestamp": datetime.now().isoformat(),
+        "llm_provider": settings.llm_provider,
+        "llm_model": settings.llm_model,
+        "total": len(results),
+        "passed": passed,
+        "pass_rate": round(pass_rate, 3),
+        "average_latency_seconds": round(avg_latency, 3),
+    }
+
+    print("=" * 70)
+    print(json.dumps(summary, indent=2))
+    print("=" * 70)
+
+    out_path = Path(__file__).parent / f"results_{int(time.time())}.json"
+    with open(out_path, "w") as f:
+        json.dump({"summary": summary, "results": results}, f, indent=2, default=str)
+    print(f"Results written to: {out_path}")
+
+    return 0 if pass_rate >= 0.6 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

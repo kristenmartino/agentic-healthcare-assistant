@@ -1,0 +1,134 @@
+{
+  "summary": {
+    "timestamp": "2026-05-04T15:32:32.019191",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "cases_judged": 10,
+    "relevance_avg": 5.0,
+    "accuracy_avg": 4.6,
+    "tone_avg": 5.0,
+    "overall_avg": 4.87
+  },
+  "cases": [
+    {
+      "id": "booking-1",
+      "query": "Book me a cardiologist for next week",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 5,
+        "tone": 5,
+        "rationale": "The response directly addresses the user's request to book a cardiologist, accurately reflects the appointment details, and maintains a professional and supportive tone appropriate for a healthcare context.",
+        "raw": "{\"relevance\":5,\"accuracy\":5,\"tone\":5,\"rationale\":\"The response directly addresses the user's request to book a cardiologist, accurately reflects the appointment details, and maintains a professional and supportive tone appropriate for a healthcare context.\"}"
+      },
+      "response_excerpt": "Your appointment with Dr. Priya Nair, a cardiologist, has been successfully booked for May 5, 2026, from 9:00 AM to 9:30 AM. Your confirmation number is AGS-926906. \n\nIf you have any further questions or need assistance, please feel free to ask. \n\nRemember, I\u2019m here to provide information and suppor"
+    },
+    {
+      "id": "booking-2",
+      "query": "Schedule an appointment with a nephrologist tomorrow",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 5,
+        "tone": 5,
+        "rationale": "The response accurately addresses the user's request to schedule an appointment with a nephrologist, provides correct details, and maintains a professional and warm tone appropriate for a healthcare context.",
+        "raw": "{\"relevance\":5,\"accuracy\":5,\"tone\":5,\"rationale\":\"The response accurately addresses the user's request to schedule an appointment with a nephrologist, provides correct details, and maintains a professional and warm tone appropriate for a healthcare context.\"}"
+      },
+      "response_excerpt": "Your appointment with Dr. Arjun Kapoor, a nephrologist, has been successfully scheduled for tomorrow, May 5, 2026, from 9:00 AM to 9:30 AM. Your confirmation number is AGS-392428. \n\nIf you have any further questions or need assistance, please feel free to ask. \n\nRemember, I\u2019m here to provide informa"
+    },
+    {
+      "id": "history-1",
+      "query": "Show me Anjali Mehra's medical history",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 5,
+        "tone": 5,
+        "rationale": "The response directly addresses the user's request for Anjali Mehra's medical history, accurately reflects the branch outputs, and maintains a warm and professional tone appropriate for a healthcare context.",
+        "raw": "{\"relevance\":5,\"accuracy\":5,\"tone\":5,\"rationale\":\"The response directly addresses the user's request for Anjali Mehra's medical history, accurately reflects the branch outputs, and maintains a warm and professional tone appropriate for a healthcare context.\"}"
+      },
+      "response_excerpt": "Hello,\n\nHere is the medical history summary for Anjali Mehra. She is a 33-year-old female who has been diagnosed with an Upper Respiratory Infection (J06.9). She presented with a 5-day history of dry cough and mild fever. To manage her symptoms, she has been advised to use antihistamines, stay hydra"
+    },
+    {
+      "id": "history-2",
+      "query": "What's the past visits summary for Ramesh Kulkarni?",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 5,
+        "tone": 5,
+        "rationale": "The response directly addresses the user's request for a past visits summary, accurately reflects the branch outputs, and maintains a warm and professional tone appropriate for a healthcare context.",
+        "raw": "{\"relevance\":5,\"accuracy\":5,\"tone\":5,\"rationale\":\"The response directly addresses the user's request for a past visits summary, accurately reflects the branch outputs, and maintains a warm and professional tone appropriate for a healthcare context.\"}"
+      },
+      "response_excerpt": "Hello,\n\nHere is the summary of past visits for Ramesh Kulkarni. He is a 65-year-old male with a history of hypertension. During his routine checkup, his vitals were stable, and he was advised to continue his current medication along with lifestyle modifications. Routine lab tests were ordered, and h"
+    },
+    {
+      "id": "records-1",
+      "query": "Add a new patient: John Doe, age 45, male, hypertension",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 5,
+        "tone": 5,
+        "rationale": "The response directly addresses the user's request to add a new patient, accurately reflects the details from the branch outputs, and maintains a warm and professional tone appropriate for a healthcare context.",
+        "raw": "{\"relevance\":5,\"accuracy\":5,\"tone\":5,\"rationale\":\"The response directly addresses the user's request to add a new patient, accurately reflects the details from the branch outputs, and maintains a warm and professional tone appropriate for a healthcare context.\"}"
+      },
+      "response_excerpt": "I am pleased to confirm that a new patient record for John Doe has been successfully created. Here are the details:\n\n- **Patient ID**: 5796da6196dc\n- **Name**: John Doe\n- **Age**: 45\n- **Gender**: Male\n- **Summary**: Reported hypertension; details to follow.\n\nIf you have any further information to a"
+    },
+    {
+      "id": "records-2",
+      "query": "Update record for David Thompson: notes: HbA1c improved to 6.8.",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 1,
+        "tone": 5,
+        "rationale": "The response is relevant and has a warm tone, but it inaccurately states the HbA1c improvement as 6.8 instead of the correct value of 6.",
+        "raw": "{\"relevance\":5,\"accuracy\":1,\"tone\":5,\"rationale\":\"The response is relevant and has a warm tone, but it inaccurately states the HbA1c improvement as 6.8 instead of the correct value of 6.\"}"
+      },
+      "response_excerpt": "Hello,\n\nI have successfully updated the record for David Thompson. His notes now reflect that his HbA1c has improved to 6.8. \n\nIf you have any further updates or need additional information, please let me know.\n\nRemember, I\u2019m here to provide information and support, but I\u2019m not a substitute for clin"
+    },
+    {
+      "id": "search-1",
+      "query": "What are the symptoms of pneumonia?",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 5,
+        "tone": 5,
+        "rationale": "The response directly addresses the user's query about pneumonia symptoms, accurately reflects the branch outputs, and maintains a professional and warm tone appropriate for a healthcare context.",
+        "raw": "{\"relevance\":5,\"accuracy\":5,\"tone\":5,\"rationale\":\"The response directly addresses the user's query about pneumonia symptoms, accurately reflects the branch outputs, and maintains a professional and warm tone appropriate for a healthcare context.\"}"
+      },
+      "response_excerpt": "Pneumonia is an infection that can lead to a variety of symptoms, which may range from mild to severe. Common symptoms include a cough that may produce mucus or pus, fever, chills, chest pain when breathing or coughing, and difficulty breathing. Additionally, some individuals may experience low oxyg"
+    },
+    {
+      "id": "search-2",
+      "query": "What is the latest treatment for chronic kidney disease?",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 5,
+        "tone": 5,
+        "rationale": "The response directly addresses the user's query about the latest treatment for chronic kidney disease, accurately reflects the branch outputs, and maintains a professional and warm tone appropriate for a healthcare context.",
+        "raw": "{\"relevance\":5,\"accuracy\":5,\"tone\":5,\"rationale\":\"The response directly addresses the user's query about the latest treatment for chronic kidney disease, accurately reflects the branch outputs, and maintains a professional and warm tone appropriate for a healthcare context.\"}"
+      },
+      "response_excerpt": "Thank you for your inquiry about the latest treatment for chronic kidney disease (CKD). \n\nRecent advancements in CKD management emphasize combination therapies and personalized medicine tailored to individual patient profiles. Notably, finerenone has emerged as a significant treatment option for CKD"
+    },
+    {
+      "id": "multi-1",
+      "query": "My 70-year-old father has chronic kidney disease. Book a nephrologist for him and summarize the latest treatment methods.",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 5,
+        "tone": 5,
+        "rationale": "The response directly addresses the user's request for booking an appointment and provides an accurate summary of treatment methods for chronic kidney disease in a professional and warm tone.",
+        "raw": "{\"relevance\":5,\"accuracy\":5,\"tone\":5,\"rationale\":\"The response directly addresses the user's request for booking an appointment and provides an accurate summary of treatment methods for chronic kidney disease in a professional and warm tone.\"}"
+      },
+      "response_excerpt": "I have successfully booked an appointment for your father with Dr. Meera Iyer, a nephrologist. The appointment is scheduled for May 5, 2026, from 9:00 AM to 9:30 AM. Your confirmation number is AGS-867663.\n\nRegarding the latest treatment methods for chronic kidney disease (CKD), management typically"
+    },
+    {
+      "id": "general-1",
+      "query": "Hello, what can you help me with?",
+      "scores": {
+        "relevance": 5,
+        "accuracy": 5,
+        "tone": 5,
+        "rationale": "The response directly addresses the user's query about what the assistant can help with, accurately reflects the branch outputs, and maintains a warm and professional tone appropriate for a healthcare context.",
+        "raw": "{\"relevance\":5,\"accuracy\":5,\"tone\":5,\"rationale\":\"The response directly addresses the user's query about what the assistant can help with, accurately reflects the branch outputs, and maintains a warm and professional tone appropriate for a healthcare context.\"}"
+      },
+      "response_excerpt": "Hello! I'm here to assist you with a variety of healthcare-related inquiries, including appointment bookings, medical information, and summaries of your health history. If you have a specific question or need assistance with something, please let me know, and I'll do my best to help you. \n\nJust a re"
+    }
+  ]
+}

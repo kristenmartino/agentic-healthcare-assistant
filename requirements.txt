@@ -1,0 +1,33 @@
+# Core LangGraph + LangChain stack
+langgraph>=0.2.0,<2.0
+langchain>=0.3.0,<1.0
+langchain-community>=0.3.0,<1.0
+
+# LLM clients (configure one of these via .env)
+langchain-groq>=0.2.0          # cloud, free tier — recommended for graders
+langchain-openai>=0.2.0        # backup
+# langchain-ollama>=0.2.0      # OPTIONAL: uncomment for local Ollama
+
+# RAG: embeddings + vector index
+sentence-transformers>=2.7.0
+faiss-cpu>=1.8.0
+
+# Data I/O
+openpyxl>=3.1.0                # records.xlsx
+pypdf>=4.0.0                   # sample_*.pdf
+pdfminer.six>=20240706         # fallback PDF text extraction
+
+# UI
+streamlit>=1.30.0
+
+# Persistence
+langgraph-checkpoint-sqlite>=2.0.0
+
+# Search backends (DuckDuckGo needs no API key; Tavily/Serper use env vars)
+duckduckgo-search>=6.0.0
+requests>=2.31.0
+
+# Boilerplate
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+typing-extensions>=4.8.0
