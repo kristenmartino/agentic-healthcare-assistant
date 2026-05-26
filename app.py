@@ -203,8 +203,11 @@ with col_main:
 
             config = {"configurable": {"thread_id": thread_id}}
             accumulated: dict = {}
+            from tools.medical_search import effective_backend
+            from tools.tracing import trace_run
             try:
-                with st.status("Working...", expanded=True) as status:
+                with trace_run(thread_id, user_input, actor="patient_chat") as trace_event, \
+                     st.status("Working...", expanded=True) as status:
                     for chunk in workflow.stream(
                         initial_state, config=config, stream_mode="updates"
                     ):
@@ -230,6 +233,21 @@ with col_main:
                 # Invalidate caches so dashboard updates
                 get_patients.clear()
                 get_recent_bookings.clear()
+
+                # Annotate the trace event with state-derived fields. trace_run
+                # writes one row when the `with` block exits.
+                _raw_info = [r for r in (accumulated.get("medical_info") or [])
+                             if "synthesis" not in r]
+                trace_event.update({
+                    "intents": accumulated.get("intents"),
+                    "is_emergency": accumulated.get("is_emergency", False),
+                    "emergency_categories": accumulated.get("emergency_categories"),
+                    "patient_id": accumulated.get("patient_id"),
+                    "ehr_backend": settings.ehr_backend,
+                    "search_backend": effective_backend(_raw_info) if _raw_info else None,
+                    "node_count": len(accumulated.get("tool_log") or []),
+                    "had_error": bool(accumulated.get("error")),
+                })
             except Exception as exc:
                 st.error(f"Workflow error: {exc}")
                 logging.exception("Workflow invocation failed")

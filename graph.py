@@ -196,10 +196,19 @@ if __name__ == "__main__":
 
     graph = build_workflow(with_checkpoint=False)
     config = {"configurable": {"thread_id": "cli-demo"}}
-    result = graph.invoke(
-        {"user_input": query, "history": []},
-        config=config,
-    )
+    from tools.tracing import trace_run
+    with trace_run("cli-demo", query, actor="cli") as trace_event:
+        result = graph.invoke(
+            {"user_input": query, "history": []},
+            config=config,
+        )
+        trace_event.update({
+            "intents": result.get("intents"),
+            "is_emergency": result.get("is_emergency", False),
+            "patient_id": result.get("patient_id"),
+            "node_count": len(result.get("tool_log") or []),
+            "had_error": bool(result.get("error")),
+        })
 
     print("\n" + "=" * 70)
     print("USER:", query)

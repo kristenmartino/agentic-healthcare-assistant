@@ -51,6 +51,7 @@ class Settings:
     fhir_fixture_dir: str
     fhir_timeout_seconds: float
     audit_db_path: str
+    trace_log_path: str
 
 
 def _detect_provider() -> tuple[LLMProvider, str]:
@@ -122,6 +123,7 @@ def load_settings() -> Settings:
         fhir_fixture_dir=_resolve_path("FHIR_FIXTURE_DIR", "data/fhir_fixtures"),
         fhir_timeout_seconds=float(os.getenv("FHIR_TIMEOUT_SECONDS", "10")),
         audit_db_path=_resolve_path("AUDIT_DB_PATH", "data/audit.sqlite"),
+        trace_log_path=_resolve_path("TRACE_LOG_PATH", "logs/runs.jsonl"),
     )
 
 

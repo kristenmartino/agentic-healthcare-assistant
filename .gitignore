@@ -10,6 +10,9 @@ data/*.json
 data/*.bin
 data/*.npy
 
+# Trace logs (per-invocation; written by tools.tracing)
+logs/
+
 # Keep FHIR fixture JSON (checked in as test data); ignore mutable write overlay.
 !data/fhir_fixtures/
 data/fhir_fixtures/patients_writes.json
