@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Install runtime + test deps
+        # Skip sentence-transformers (large; pulls torch). The graph already
+        # falls back to TF-IDF / numpy dot-product when not present, and our
+        # unit tests don't exercise the vector index. Skip langchain-groq /
+        # langchain-openai — no API key in CI; the stub provider handles it.
+        run: |
+          pip install -r requirements.txt \
+            || pip install \
+              langgraph langchain langchain-community \
+              langgraph-checkpoint-sqlite \
+              openpyxl pypdf pdfminer.six \
+              streamlit duckduckgo-search requests \
+              python-dotenv pydantic typing-extensions \
+              pytest responses
+
+      - name: Run pytest
+        env:
+          EHR_BACKEND: fhir_fixture
+        run: pytest -v
+
+      - name: Deterministic eval (routing + state shape)
+        env:
+          EHR_BACKEND: fhir_fixture
+        # The eval prints a JSON summary; we require ≥60% pass rate.
+        # Stub LLM gives us 100% on the original 10 cases historically,
+        # so anything below ~80% means a regression — fail loud.
+        run: |
+          python -m eval.qa_eval || (echo "::error::eval suite regressed" && exit 1)

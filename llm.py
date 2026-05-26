@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 from config import Settings, load_settings
 
@@ -25,7 +24,7 @@ class LLMUnavailable(RuntimeError):
 
 # Module-level singleton client, lazily created.
 _client = None
-_settings: Optional[Settings] = None
+_settings: Settings | None = None
 
 
 def _get_settings() -> Settings:

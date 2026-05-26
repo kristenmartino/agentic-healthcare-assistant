@@ -1,0 +1,53 @@
+# docker compose up         — boots app + HAPI FHIR test server.
+#
+# The app's EHR backend is set to `fhir` so it talks to the local HAPI
+# container at http://hapi-fhir:8080/fhir. To run against the bundled
+# fixture data instead, set EHR_BACKEND=fhir_fixture in your .env (no
+# hapi-fhir container needed).
+
+services:
+  app:
+    build: .
+    image: healthcare-assistant:latest
+    container_name: healthcare-assistant
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      EHR_BACKEND: fhir
+      FHIR_BASE_URL: http://hapi-fhir:8080/fhir
+      ENABLE_PERSISTENCE: "true"
+    env_file:
+      - .env
+    volumes:
+      # Persist SQLite DBs across container restarts.
+      - ./data:/app/data
+    depends_on:
+      hapi-fhir:
+        condition: service_healthy
+
+  hapi-fhir:
+    image: hapiproject/hapi:latest
+    container_name: hapi-fhir
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Match HAPI's default JPA config but disable subscriptions for a
+      # lighter footprint; flip `hapi.fhir.subscription.*_enabled` to enable.
+      hapi.fhir.fhir_version: R4
+      hapi.fhir.allow_external_references: "true"
+      hapi.fhir.expunge_enabled: "true"
+    volumes:
+      - hapi-data:/data/hapi
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - "wget -q -O - http://localhost:8080/fhir/metadata >/dev/null || exit 1"
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s
+
+volumes:
+  hapi-data:

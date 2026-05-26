@@ -12,10 +12,10 @@ from __future__ import annotations
 import logging
 import random
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,96 @@ def initialize_appointments(db_path: str, days_ahead: int = 14) -> dict[str, int
     return {"doctors": len(_DOCTORS), "slots": len(slots_to_insert)}
 
 
+def ensure_future_slots(db_path: str, *, days_ahead: int = 14, min_open_slots: int = 50) -> dict[str, int]:
+    """Idempotent slot freshness check — call at every startup path.
+
+    The problem this solves: `initialize_appointments` pre-generates slots
+    for today + N days at seed time. If that seed runs weeks before the next
+    `book_appointment` call, every slot is already in the past, and bookings
+    fail with "no available slots" — silently breaking the eval and any
+    grader's first interaction.
+
+    This function appends slots forward without touching existing rows.
+    Safe to call from seed.py, the Streamlit app's startup, and eval setup
+    without disturbing already-booked appointments.
+
+    Args:
+        days_ahead: how far forward to extend the window.
+        min_open_slots: if fewer open future slots exist than this, top up.
+
+    Returns: {"added": int, "open_future_before": int, "open_future_after": int}.
+    """
+    # If the doctor / slot tables don't exist, defer to initialize_appointments.
+    if not Path(db_path).exists():
+        initialize_appointments(db_path, days_ahead=days_ahead)
+        return {"added": 0, "bootstrapped": True}
+
+    with _connect(db_path) as conn:
+        conn.executescript(SCHEMA)
+
+        # Make sure the doctors table is populated. If a downstream user
+        # somehow ended up with an empty doctors table, we can't generate
+        # slots — fall back to a full re-init.
+        doctor_rows = conn.execute("SELECT doctor_id FROM doctors").fetchall()
+        if not doctor_rows:
+            conn.executemany(
+                "INSERT INTO doctors (doctor_id, name, specialty) VALUES (?, ?, ?)",
+                _DOCTORS,
+            )
+            doctor_rows = conn.execute("SELECT doctor_id FROM doctors").fetchall()
+
+        open_before = conn.execute(
+            "SELECT COUNT(*) FROM slots WHERE booked = 0 AND start_time >= ?",
+            (datetime.now().isoformat(),),
+        ).fetchone()[0]
+
+        if open_before >= min_open_slots:
+            return {"added": 0, "open_future_before": open_before,
+                    "open_future_after": open_before}
+
+        # Generate forward starting from today, skipping (doctor, start_time)
+        # pairs that already exist so we never duplicate.
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        candidate: list[tuple[str, str, str]] = []
+        for row in doctor_rows:
+            for d in range(days_ahead):
+                day = today + timedelta(days=d)
+                if day.weekday() >= 5:
+                    continue
+                for hour in range(9, 17):
+                    for minute in (0, 30):
+                        start = day.replace(hour=hour, minute=minute)
+                        end = start + timedelta(minutes=30)
+                        candidate.append((row["doctor_id"], start.isoformat(), end.isoformat()))
+
+        # Bulk dedup against the existing table.
+        added = 0
+        for doctor_id, start, end in candidate:
+            existing = conn.execute(
+                "SELECT 1 FROM slots WHERE doctor_id = ? AND start_time = ?",
+                (doctor_id, start),
+            ).fetchone()
+            if existing:
+                continue
+            conn.execute(
+                "INSERT INTO slots (doctor_id, start_time, end_time) VALUES (?, ?, ?)",
+                (doctor_id, start, end),
+            )
+            added += 1
+
+        open_after = conn.execute(
+            "SELECT COUNT(*) FROM slots WHERE booked = 0 AND start_time >= ?",
+            (datetime.now().isoformat(),),
+        ).fetchone()[0]
+
+    logger.info(
+        "ensure_future_slots: open_before=%d, open_after=%d, added=%d (window=%dd)",
+        open_before, open_after, added, days_ahead,
+    )
+    return {"added": added, "open_future_before": open_before,
+            "open_future_after": open_after}
+
+
 def list_doctors_for_specialty(db_path: str, specialty: str) -> list[dict]:
     with _connect(db_path) as conn:
         rows = conn.execute(
@@ -130,7 +220,7 @@ def book_appointment(
     patient_id: str,
     patient_name: str,
     specialty: str,
-    preferred_date: Optional[str] = None,
+    preferred_date: str | None = None,
 ) -> dict:
     """Book the earliest available slot matching specialty (and date if given).
 

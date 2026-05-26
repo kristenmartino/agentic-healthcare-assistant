@@ -7,7 +7,8 @@ from datetime import datetime, timedelta
 from config import load_settings
 from state import HealthcareState
 from tools.appointments import book_appointment
-from tools.ehr_db import find_patient_by_name
+from tools.audit import log_access
+from tools.ehr import find_patient_by_name
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def booking_node(state: HealthcareState) -> dict:
     # Resolve patient_id from name if not already set
     if not patient_id and patient_name and patient_name != "Walk-in Patient":
         try:
-            patient = find_patient_by_name(settings.ehr_db_path, patient_name)
+            patient = find_patient_by_name(patient_name, settings, actor="patient_chat")
             if patient:
                 patient_id = patient["patient_id"]
         except Exception as exc:
@@ -45,6 +46,17 @@ def booking_node(state: HealthcareState) -> dict:
             specialty=specialty,
             preferred_date=preferred_date,
         )
+        log_access(
+            "patient_chat", "appointment.book", "Appointment",
+            str(appointment.get("slot_id")),
+            patient_id=patient_id,
+            details={
+                "specialty": specialty,
+                "doctor_name": appointment.get("doctor_name"),
+                "start_time": appointment.get("start_time"),
+                "confirmation_no": appointment.get("confirmation_no"),
+            },
+        )
         log_entry = {
             "node": "booking",
             "tool": "book_appointment",
@@ -63,6 +75,11 @@ def booking_node(state: HealthcareState) -> dict:
         }
     except ValueError as exc:
         logger.warning("Booking failed: %s", exc)
+        log_access(
+            "patient_chat", "appointment.book", "Appointment", None,
+            patient_id=patient_id, outcome="error",
+            details={"specialty": specialty, "error": str(exc)},
+        )
         return {
             "error": f"Booking failed: {exc}",
             "tool_log": [{
@@ -75,6 +92,11 @@ def booking_node(state: HealthcareState) -> dict:
         }
     except Exception as exc:
         logger.exception("Unexpected booking error")
+        log_access(
+            "patient_chat", "appointment.book", "Appointment", None,
+            patient_id=patient_id, outcome="error",
+            details={"specialty": specialty, "error": str(exc), "exception": True},
+        )
         return {
             "error": f"Unexpected booking error: {exc}",
             "tool_log": [{"node": "booking", "result": "exception", "error": str(exc)}],

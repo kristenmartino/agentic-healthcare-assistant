@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ def medical_search(
     query: str,
     *,
     top_k: int = 4,
-    tavily_api_key: Optional[str] = None,
+    tavily_api_key: str | None = None,
 ) -> list[dict]:
     """Run a medical-info search. Returns list of {title, snippet, url, source}.
 
@@ -91,7 +90,7 @@ def _ddg_search(query: str, top_k: int) -> list[dict]:
     (some Python builds + LibreSSL combos can't negotiate TLS 1.3).
     """
     DDGS = None
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
 
     try:
         from ddgs import DDGS as _DDGS  # type: ignore
@@ -154,8 +153,8 @@ def _stub_search(query: str, top_k: int) -> list[dict]:
 
 # CLI: python -m tools.medical_search "query"
 if __name__ == "__main__":
-    import sys
     import json as _json
+    import sys
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if len(sys.argv) < 2:
         print("Usage: python -m tools.medical_search 'your query'")

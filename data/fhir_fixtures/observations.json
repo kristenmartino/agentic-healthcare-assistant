@@ -1,0 +1,60 @@
+[
+  {
+    "resourceType": "Observation",
+    "id": "obs-anjali-a1c",
+    "subject": {"reference": "Patient/anjali-mehra"},
+    "status": "final",
+    "category": [{"coding": [{"system": "http://terminology.hl7.org/CodeSystem/observation-category", "code": "laboratory"}]}],
+    "code": {
+      "coding": [{"system": "http://loinc.org", "code": "4548-4", "display": "Hemoglobin A1c"}],
+      "text": "HbA1c"
+    },
+    "effectiveDateTime": "2026-04-12",
+    "valueQuantity": {"value": 7.4, "unit": "%", "system": "http://unitsofmeasure.org"}
+  },
+  {
+    "resourceType": "Observation",
+    "id": "obs-anjali-bp",
+    "subject": {"reference": "Patient/anjali-mehra"},
+    "status": "final",
+    "code": {"text": "Systolic blood pressure"},
+    "effectiveDateTime": "2026-04-12",
+    "valueQuantity": {"value": 138, "unit": "mmHg"}
+  },
+  {
+    "resourceType": "Observation",
+    "id": "obs-david-a1c",
+    "subject": {"reference": "Patient/david-thompson"},
+    "status": "final",
+    "code": {"text": "HbA1c"},
+    "effectiveDateTime": "2026-05-01",
+    "valueQuantity": {"value": 6.8, "unit": "%"}
+  },
+  {
+    "resourceType": "Observation",
+    "id": "obs-ramesh-egfr",
+    "subject": {"reference": "Patient/ramesh-kulkarni"},
+    "status": "final",
+    "code": {"text": "Estimated GFR"},
+    "effectiveDateTime": "2026-03-20",
+    "valueQuantity": {"value": 42, "unit": "mL/min/1.73m2"}
+  },
+  {
+    "resourceType": "Observation",
+    "id": "obs-ramesh-creat",
+    "subject": {"reference": "Patient/ramesh-kulkarni"},
+    "status": "final",
+    "code": {"text": "Serum creatinine"},
+    "effectiveDateTime": "2026-03-20",
+    "valueQuantity": {"value": 1.9, "unit": "mg/dL"}
+  },
+  {
+    "resourceType": "Observation",
+    "id": "obs-rebeca-fev1",
+    "subject": {"reference": "Patient/rebeca-nagle"},
+    "status": "final",
+    "code": {"text": "Forced expiratory volume (FEV1)"},
+    "effectiveDateTime": "2026-02-08",
+    "valueQuantity": {"value": 82, "unit": "% predicted"}
+  }
+]

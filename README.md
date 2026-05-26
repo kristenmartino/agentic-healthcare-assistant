@@ -83,6 +83,15 @@ streamlit run app.py
 python eval/qa_eval.py
 ```
 
+### Docker
+
+```bash
+docker compose up --build
+# App on http://localhost:8501, HAPI FHIR on http://localhost:8080/fhir
+```
+
+The compose stack runs a HAPI FHIR R4 server alongside the app and sets `EHR_BACKEND=fhir` so the app talks to it. To run against the bundled fixtures instead (no FHIR container needed), set `EHR_BACKEND=fhir_fixture` in your `.env`.
+
 The app **runs without any API key** — falls back to a deterministic stub LLM and DuckDuckGo (or stub search if DDG is rate-limited / TLS-blocked). All 10 eval cases still pass in stub mode because they grade routing + state shape, not LLM prose quality.
 
 ## Stack
@@ -114,6 +123,49 @@ All from the instructor-provided folder `../Datasets_New/Agentic Healthcare Assi
 | `sample_report_anjali.pdf`, `sample_report_david.pdf`, `sample_report_ramesh.pdf` | Indexed into FAISS; matched to corresponding records.xlsx rows for history retrieval. |
 
 22 chunks total across 4 PDFs, 512-dim TF-IDF embeddings (or 384-dim sentence-transformer when installed).
+
+## Safety classifier (clinical red-flag triage)
+
+The graph starts with a **safety node** that scans the user's message for emergency phrases (cardiac, stroke, suicide/self-harm, anaphylaxis, severe bleeding, altered mental status). If any fire, the workflow short-circuits to a hardcoded urgent-care response with crisis hotlines (911 / 988 / 112 / 999 / 108) and skips every LLM-driven node — the worst possible failure mode for a clinical assistant is "calm reassuring advice on a real emergency", so the LLM is never given the chance to soften.
+
+Two layers:
+
+1. **Deterministic regex sweep** (always runs, <1ms). Sourced from the AHA STEMI symptom list, 988 crisis criteria, and the WHO sudden-onset stroke checklist. False positives are tolerable; false negatives are not.
+2. **LLM second-opinion** (optional, real-LLM only). Borderline regex matches can be downgraded to NORMAL if the LLM is confident the user is asking *about* a condition rather than *experiencing* one. The regex match alone is enough to escalate; the LLM can only de-escalate.
+
+The classifier handles common false positives via informational guards: "what are the symptoms of a heart attack?", "my dad had a stroke in 2018", "family history of …" do NOT fire. The 29 tests in `tests/test_safety.py` lock in both true-positive escalation and false-positive suppression.
+
+## EHR backends
+
+The EHR backing store is pluggable via `EHR_BACKEND` (`tools/ehr.py` dispatches). All three backends satisfy the same Protocol (`list_patients`, `find_patient_by_name`, `add_or_update_patient`, `get_patient_clinical_context`), so swapping is a one-env-var change with no code edits.
+
+| Backend | Trigger | What it does | When to use |
+|---|---|---|---|
+| `sqlite` | `EHR_BACKEND=sqlite` (default) | Loads `records.xlsx` into `data/ehr.sqlite`; freeform `summary` field per patient. | Course-end demo; matches the instructor's dataset 1:1. |
+| `fhir` | `EHR_BACKEND=fhir`, `FHIR_BASE_URL=…` | Talks live to a FHIR R4 server (HAPI, AWS HealthLake, Microsoft FHIR, Epic on FHIR sandbox). Reads `Patient`, `Condition`, `Observation` resources; writes `Patient` via POST/PUT. | Production-shaped integration. Set `FHIR_BASE_URL` to your server. |
+| `fhir_fixture` | `EHR_BACKEND=fhir_fixture` | Reads FHIR-shape JSON from `data/fhir_fixtures/` (5 synthetic patients with Conditions + recent Observations). Writes go to an overlay file. | Offline FHIR development & CI; demonstrates the FHIR shape without a server. |
+
+History queries on the FHIR backends are enriched with the patient's active Conditions (SNOMED-coded) and most-recent Observations (LOINC-coded), which the LLM summarizer cites in its output.
+
+## PHI access audit log
+
+Every patient-identifiable read or write produces one row in `data/audit.sqlite` (`tools/audit.py`). This is the lightest credible implementation of HIPAA's "examine activity in systems containing ePHI" requirement (45 CFR 164.312(b)). The audit DB is intentionally separate from the EHR DB — in a real deployment they live in different trust boundaries so a compromise of the EHR doesn't silently wipe the audit trail.
+
+Each event records:
+
+| Column | Example |
+|---|---|
+| `ts` | `2026-05-26T21:30:14Z` |
+| `actor` | `patient_chat`, `doctor_view`, `mcp`, `audit_view`, `system` |
+| `action` | `ehr.read`, `ehr.write`, `appointment.book`, `history.retrieve`, `medical_search.query`, `audit.read` |
+| `resource_type` / `resource_id` | `Patient` / `fhir:anjali-mehra`; `Appointment` / `slot_id` |
+| `patient_id` | indexed for "all access events for patient X" queries |
+| `outcome` | `success`, `not_found`, `error` |
+| `details` | JSON: query terms, fields changed, errors, sub-counts |
+
+The **🔍 Audit Log** Streamlit page (`pages/3_Audit_Log.py`) is the human view: summary strip, filters by patient/action/actor/time window, expandable JSON details, and CSV export. The MCP server exposes `get_audit_log` so an external client (Claude Desktop, a SIEM ingester) can pull the same data programmatically.
+
+Audit writes never raise — an audit failure is logged but cannot break a user-facing call. The risk model is "missing entry, not crashed app".
 
 ## Project layout
 

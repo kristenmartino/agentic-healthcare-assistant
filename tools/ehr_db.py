@@ -17,9 +17,10 @@ import hashlib
 import logging
 import re
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ def _patient_id(phone_digits: str, age: Any, name: str) -> str:
     return hashlib.sha1(seed.encode()).hexdigest()[:12]
 
 
-def _coerce_age(raw: Any) -> Optional[int]:
+def _coerce_age(raw: Any) -> int | None:
     if raw is None:
         return None
     try:
@@ -119,7 +120,7 @@ def initialize_ehr(records_xlsx_path: str, db_path: str) -> dict[str, int]:
 
     for r in rows[1:]:
         raw_count += 1
-        record = dict(zip(headers, r))
+        record = dict(zip(headers, r, strict=False))
 
         name = col(record, "Name")
         if not name:
@@ -184,7 +185,7 @@ def list_patients(db_path: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def find_patient_by_name(db_path: str, name: str) -> Optional[dict]:
+def find_patient_by_name(db_path: str, name: str) -> dict | None:
     """Case-insensitive name match. Returns the first hit or None."""
     if not name:
         return None

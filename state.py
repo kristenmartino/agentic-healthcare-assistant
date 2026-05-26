@@ -22,7 +22,7 @@ LangGraph doesn't reject empty-list returns.
 from __future__ import annotations
 
 from operator import add
-from typing import Annotated, Any, Literal, Optional, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 # The 5 intents the classifier can return. "general" is a fallback for
 # greetings, definitions, and chit-chat that don't fit the other 4.
@@ -49,7 +49,7 @@ Specialty = Literal[
 ]
 
 
-def _merge_error(left: Optional[str], right: Optional[str]) -> Optional[str]:
+def _merge_error(left: str | None, right: str | None) -> str | None:
     """Reducer for the `error` field — concatenate distinct errors."""
     if not left:
         return right
@@ -63,26 +63,30 @@ def _merge_error(left: Optional[str], right: Optional[str]) -> Optional[str]:
 class HealthcareState(TypedDict, total=False):
     # User input + identification
     user_input: str
-    patient_id: Optional[str]              # SHA1 hash; matches ehr.sqlite
-    patient_name: Optional[str]            # display name
-    requested_specialty: Optional[Specialty]
-    requested_date: Optional[str]          # ISO date string if extracted
+    patient_id: str | None              # SHA1 hash; matches ehr.sqlite
+    patient_name: str | None            # display name
+    requested_specialty: Specialty | None
+    requested_date: str | None          # ISO date string if extracted
 
     # Intent routing
     intent: Intent                         # primary intent
     intents: Annotated[list[Intent], add]  # multi-intent (parallel fan-out)
 
     # Per-branch outputs
-    appointment: Optional[dict[str, Any]]  # {doctor, datetime, slot_id, confirmation_no}
-    record_change: Optional[dict[str, Any]]  # {operation, fields, before, after}
-    history_summary: Optional[str]
-    medical_info: Optional[list[dict[str, Any]]]  # [{title, snippet, url, source}]
+    appointment: dict[str, Any] | None  # {doctor, datetime, slot_id, confirmation_no}
+    record_change: dict[str, Any] | None  # {operation, fields, before, after}
+    history_summary: str | None
+    medical_info: list[dict[str, Any]] | None  # [{title, snippet, url, source}]
 
     # Composer output
     response: str
     sources: Annotated[list[dict[str, Any]], add]
 
+    # Safety pre-classifier — set by nodes/safety.py before classify_intent
+    is_emergency: bool
+    emergency_categories: list[str]
+
     # Cross-cutting
-    error: Annotated[Optional[str], _merge_error]
+    error: Annotated[str | None, _merge_error]
     tool_log: Annotated[list[dict[str, Any]], add]   # for the logs UI
     history: list[dict[str, str]]                    # conversation history (Streamlit feeds this)

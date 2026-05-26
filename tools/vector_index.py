@@ -10,7 +10,6 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Optional
 
 import numpy as np
 
@@ -212,7 +211,7 @@ def search_index(query: str, index_path: str, chunks_path: str, top_k: int = 5) 
         scores = scores_full[ids]
 
     results = []
-    for score, i in zip(scores, ids):
+    for score, i in zip(scores, ids, strict=False):
         if i < 0 or i >= len(chunks):
             continue
         results.append({

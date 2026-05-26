@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 LLMProvider = Literal["groq", "openai", "stub"]
+EHRBackend = Literal["sqlite", "fhir", "fhir_fixture"]
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -44,6 +45,12 @@ class Settings:
 
     records_xlsx_path: str
     patient_pdf_dir: str
+
+    ehr_backend: EHRBackend
+    fhir_base_url: str
+    fhir_fixture_dir: str
+    fhir_timeout_seconds: float
+    audit_db_path: str
 
 
 def _detect_provider() -> tuple[LLMProvider, str]:
@@ -76,6 +83,13 @@ def _resolve_path(env_key: str, default: str) -> str:
     return str(p)
 
 
+def _detect_ehr_backend() -> EHRBackend:
+    raw = os.getenv("EHR_BACKEND", "sqlite").lower()
+    if raw in {"sqlite", "fhir", "fhir_fixture"}:
+        return raw  # type: ignore[return-value]
+    return "sqlite"
+
+
 def load_settings() -> Settings:
     provider, model = _detect_provider()
     return Settings(
@@ -102,6 +116,12 @@ def load_settings() -> Settings:
             "PATIENT_PDF_DIR",
             "../Datasets_New/Agentic Healthcare Assistant for Medical Task Automation",
         ),
+
+        ehr_backend=_detect_ehr_backend(),
+        fhir_base_url=os.getenv("FHIR_BASE_URL", "https://hapi.fhir.org/baseR4"),
+        fhir_fixture_dir=_resolve_path("FHIR_FIXTURE_DIR", "data/fhir_fixtures"),
+        fhir_timeout_seconds=float(os.getenv("FHIR_TIMEOUT_SECONDS", "10")),
+        audit_db_path=_resolve_path("AUDIT_DB_PATH", "data/audit.sqlite"),
     )
 
 

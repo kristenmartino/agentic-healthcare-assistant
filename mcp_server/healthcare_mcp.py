@@ -28,7 +28,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -36,12 +35,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import load_settings
 from tools.appointments import (
     book_appointment as _book,
+)
+from tools.appointments import (
     get_doctors_for_dashboard,
     list_doctors_for_specialty,
 )
-from tools.ehr_db import (
+from tools.audit import log_access, query_audit
+from tools.ehr import (
     add_or_update_patient as _upsert_patient,
+)
+from tools.ehr import (
     find_patient_by_name,
+)
+from tools.ehr import (
     list_patients as _list_patients,
 )
 from tools.medical_search import medical_search as _medical_search
@@ -73,7 +79,7 @@ def _build_settings():
 def tool_book_appointment(
     patient_name: str,
     specialty: str,
-    preferred_date: Optional[str] = None,
+    preferred_date: str | None = None,
 ) -> dict:
     """Book the earliest available appointment slot for the given specialty.
 
@@ -88,18 +94,29 @@ def tool_book_appointment(
     """
     s = _build_settings()
     # Look up patient_id from the EHR; fall back to a synthetic walk-in ID.
-    patient = find_patient_by_name(s.ehr_db_path, patient_name)
+    patient = find_patient_by_name(patient_name, s, actor="mcp")
     patient_id = patient["patient_id"] if patient else f"walkin-{abs(hash(patient_name)) % 10**8:08d}"
-    return _book(
+    appointment = _book(
         s.appointments_db_path,
         patient_id=patient_id,
         patient_name=patient_name,
         specialty=specialty,
         preferred_date=preferred_date,
     )
+    log_access(
+        "mcp", "appointment.book", "Appointment",
+        str(appointment.get("slot_id")),
+        patient_id=patient_id,
+        details={
+            "specialty": specialty,
+            "doctor_name": appointment.get("doctor_name"),
+            "confirmation_no": appointment.get("confirmation_no"),
+        },
+    )
+    return appointment
 
 
-def tool_list_doctors(specialty: Optional[str] = None) -> list[dict]:
+def tool_list_doctors(specialty: str | None = None) -> list[dict]:
     """List doctors. Filter by specialty if provided."""
     s = _build_settings()
     if specialty:
@@ -107,26 +124,26 @@ def tool_list_doctors(specialty: Optional[str] = None) -> list[dict]:
     return get_doctors_for_dashboard(s.appointments_db_path)
 
 
-def tool_find_patient(name: str) -> Optional[dict]:
+def tool_find_patient(name: str) -> dict | None:
     """Find a patient by case-insensitive name match. Returns first hit or None."""
     s = _build_settings()
-    return find_patient_by_name(s.ehr_db_path, name)
+    return find_patient_by_name(name, s, actor="mcp")
 
 
 def tool_list_patients() -> list[dict]:
     """List all patients (id, name, age, gender, summary)."""
     s = _build_settings()
-    return _list_patients(s.ehr_db_path)
+    return _list_patients(s, actor="mcp")
 
 
 def tool_upsert_patient(
     name: str,
-    age: Optional[int] = None,
-    gender: Optional[str] = None,
-    phone: Optional[str] = None,
-    email: Optional[str] = None,
-    address: Optional[str] = None,
-    summary: Optional[str] = None,
+    age: int | None = None,
+    gender: str | None = None,
+    phone: str | None = None,
+    email: str | None = None,
+    address: str | None = None,
+    summary: str | None = None,
 ) -> dict:
     """Add a new patient or update an existing one.
 
@@ -134,7 +151,6 @@ def tool_upsert_patient(
     """
     s = _build_settings()
     return _upsert_patient(
-        s.ehr_db_path,
         {
             "name": name,
             "age": age,
@@ -144,6 +160,8 @@ def tool_upsert_patient(
             "address": address,
             "summary": summary,
         },
+        s,
+        actor="mcp",
     )
 
 
@@ -155,7 +173,7 @@ def tool_get_history(patient_name: str) -> dict:
     summarize themselves with their own model.
     """
     s = _build_settings()
-    record = find_patient_by_name(s.ehr_db_path, patient_name)
+    record = find_patient_by_name(patient_name, s, actor="mcp")
     chunks = []
     try:
         chunks = search_index(
@@ -166,6 +184,12 @@ def tool_get_history(patient_name: str) -> dict:
         )
     except Exception as exc:
         logger.warning("History RAG failed: %s", exc)
+    log_access(
+        "mcp", "history.retrieve", "Patient",
+        record["patient_id"] if record else None,
+        patient_id=record["patient_id"] if record else None,
+        details={"chunks": len(chunks), "search_name": patient_name},
+    )
     return {
         "record": record,
         "chunks": chunks,
@@ -179,7 +203,39 @@ def tool_medical_search(query: str, top_k: int = 4) -> list[dict]:
     Returns a list of {title, snippet, url, source}.
     """
     s = _build_settings()
-    return _medical_search(query, top_k=top_k, tavily_api_key=s.tavily_api_key)
+    results = _medical_search(query, top_k=top_k, tavily_api_key=s.tavily_api_key)
+    log_access(
+        "mcp", "medical_search.query", "WebSearch", None,
+        details={"query": query, "top_k": top_k, "results": len(results)},
+    )
+    return results
+
+
+def tool_get_audit_log(
+    patient_id: str | None = None,
+    action_prefix: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Read the PHI audit log.
+
+    Args:
+        patient_id: filter to one patient (e.g. 'fhir:abc').
+        action_prefix: filter by action dotted-prefix (e.g. 'ehr.', 'appointment.').
+        limit: max events to return (default 50, max 500).
+
+    Returns the events ordered newest-first.
+    """
+    limit = max(1, min(int(limit), 500))
+    events = query_audit(
+        patient_id=patient_id,
+        action_prefix=action_prefix,
+        limit=limit,
+    )
+    log_access("mcp", "audit.read", "AuditLog", None,
+               details={"returned": len(events), "limit": limit,
+                        "filter_patient": patient_id,
+                        "filter_action_prefix": action_prefix})
+    return events
 
 
 TOOLS = {
@@ -190,6 +246,7 @@ TOOLS = {
     "upsert_patient": tool_upsert_patient,
     "get_history": tool_get_history,
     "medical_search": tool_medical_search,
+    "get_audit_log": tool_get_audit_log,
 }
 
 

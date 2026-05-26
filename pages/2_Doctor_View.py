@@ -14,13 +14,13 @@ Sections:
 """
 from __future__ import annotations
 
+# Allow imports from project root
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
 
-# Allow imports from project root
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import load_settings
@@ -31,9 +31,8 @@ from tools.appointments import (
     get_specialty_stats,
     list_all_bookings,
 )
-from tools.ehr_db import list_patients
-from utils import format_appointment_time, format_date
-
+from tools.ehr import list_patients
+from utils import format_appointment_time
 
 st.set_page_config(
     page_title="Doctor View — Healthcare Assistant",
@@ -65,7 +64,15 @@ st.markdown(
 
 @st.cache_resource(show_spinner=False)
 def _settings():
-    return load_settings()
+    s = load_settings()
+    # Top up the slot table so the dashboard never renders against an
+    # all-past slot DB. Idempotent; preserves existing bookings.
+    from tools.appointments import ensure_future_slots
+    try:
+        ensure_future_slots(s.appointments_db_path)
+    except Exception:
+        pass  # dashboard is read-only — non-fatal
+    return s
 
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -85,7 +92,7 @@ def _doctors():
 
 @st.cache_data(ttl=10, show_spinner=False)
 def _patients():
-    return list_patients(_settings().ehr_db_path)
+    return list_patients(_settings(), actor="doctor_view")
 
 
 def _refresh_all_caches():
