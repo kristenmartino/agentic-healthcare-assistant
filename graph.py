@@ -5,21 +5,24 @@ Layout (parallel mode, the default):
                                 START
                                   │
                                   ▼
+                              safety  ───(is_emergency)──► END
+                                  │
+                                  ▼
                           classify_intent
                                   │
         ┌─────────────────────────┼─────────────────────────┐
         ▼                         ▼                         ▼
-   appointment_fanout      records_node            medical_search_node
+   booking_node             records_node            medical_search_node
+   history_node             (CRUD on EHR)            (Tavily/DDG → MedlinePlus,
+   (LLM summarize                                     WHO, CDC, Mayo)
+    + FAISS lookup)
         │                         │                         │
-        ├─→ booking_node          │                         │
-        ├─→ history_node          │                         │
-        │   (parallel)            │                         │
-        └────────┬────────────────┴─────────────────────────┘
-                 ▼
-          compose_response
-                 │
-                 ▼
-                END
+        └─────────────────────────┼─────────────────────────┘
+                                  ▼
+                          compose_response
+                                  │
+                                  ▼
+                                 END
 
 Multi-intent queries (e.g., "book a nephrologist AND summarize latest treatments")
 fan out into parallel branches that converge on the composer. LangGraph waits
@@ -39,17 +42,27 @@ from typing import Optional
 from langgraph.graph import END, START, StateGraph
 
 from config import Settings, load_settings
-from nodes import (
-    booking_node,
-    classify_intent,
-    compose_response_node,
-    history_node,
-    medical_search_node,
-    records_node,
-)
+from nodes.booking import booking_node
+from nodes.classifier import classify_intent
+from nodes.composer import compose_response_node
+from nodes.history import history_node
+from nodes.medical_search_node import medical_search_node
+from nodes.records import records_node
+from nodes.safety import safety_node
 from state import HealthcareState
 
 logger = logging.getLogger(__name__)
+
+
+def _route_after_safety(state: HealthcareState) -> str:
+    """Skip all clinical reasoning when the safety node flagged an emergency.
+
+    The safety node has already populated `response` with the hardcoded urgent-
+    care template; routing straight to END preserves it as-is. Putting any LLM
+    node in the loop on an emergency risks softening the message, which is
+    the worst possible failure mode for a clinical assistant.
+    """
+    return "compose_response" if not state.get("is_emergency") else "__skip_to_end__"
 
 
 def _route_after_classify(state: HealthcareState) -> list[str]:
@@ -83,6 +96,7 @@ def build_workflow(*, settings: Optional[Settings] = None, with_checkpoint: bool
 
     workflow = StateGraph(HealthcareState)
 
+    workflow.add_node("safety", safety_node)
     workflow.add_node("classify_intent", classify_intent)
     workflow.add_node("booking_node", booking_node)
     workflow.add_node("records_node", records_node)
@@ -90,7 +104,15 @@ def build_workflow(*, settings: Optional[Settings] = None, with_checkpoint: bool
     workflow.add_node("medical_search_node", medical_search_node)
     workflow.add_node("compose_response", compose_response_node)
 
-    workflow.add_edge(START, "classify_intent")
+    workflow.add_edge(START, "safety")
+
+    # On emergency, route straight to END — the safety node's hardcoded
+    # response is the deliverable; the composer must not soften it.
+    workflow.add_conditional_edges(
+        "safety",
+        _route_after_safety,
+        {"compose_response": "classify_intent", "__skip_to_end__": END},
+    )
 
     # All branch sets — give LangGraph the full target universe
     branch_targets = {

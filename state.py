@@ -82,6 +82,10 @@ class HealthcareState(TypedDict, total=False):
     response: str
     sources: Annotated[list[dict[str, Any]], add]
 
+    # Safety pre-classifier — set by nodes/safety.py before classify_intent
+    is_emergency: bool
+    emergency_categories: list[str]
+
     # Cross-cutting
     error: Annotated[Optional[str], _merge_error]
     tool_log: Annotated[list[dict[str, Any]], add]   # for the logs UI

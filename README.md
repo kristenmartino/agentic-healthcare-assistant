@@ -115,6 +115,17 @@ All from the instructor-provided folder `../Datasets_New/Agentic Healthcare Assi
 
 22 chunks total across 4 PDFs, 512-dim TF-IDF embeddings (or 384-dim sentence-transformer when installed).
 
+## Safety classifier (clinical red-flag triage)
+
+The graph starts with a **safety node** that scans the user's message for emergency phrases (cardiac, stroke, suicide/self-harm, anaphylaxis, severe bleeding, altered mental status). If any fire, the workflow short-circuits to a hardcoded urgent-care response with crisis hotlines (911 / 988 / 112 / 999 / 108) and skips every LLM-driven node — the worst possible failure mode for a clinical assistant is "calm reassuring advice on a real emergency", so the LLM is never given the chance to soften.
+
+Two layers:
+
+1. **Deterministic regex sweep** (always runs, <1ms). Sourced from the AHA STEMI symptom list, 988 crisis criteria, and the WHO sudden-onset stroke checklist. False positives are tolerable; false negatives are not.
+2. **LLM second-opinion** (optional, real-LLM only). Borderline regex matches can be downgraded to NORMAL if the LLM is confident the user is asking *about* a condition rather than *experiencing* one. The regex match alone is enough to escalate; the LLM can only de-escalate.
+
+The classifier handles common false positives via informational guards: "what are the symptoms of a heart attack?", "my dad had a stroke in 2018", "family history of …" do NOT fire. The 29 tests in `tests/test_safety.py` lock in both true-positive escalation and false-positive suppression.
+
 ## EHR backends
 
 The EHR backing store is pluggable via `EHR_BACKEND` (`tools/ehr.py` dispatches). All three backends satisfy the same Protocol (`list_patients`, `find_patient_by_name`, `add_or_update_patient`, `get_patient_clinical_context`), so swapping is a one-env-var change with no code edits.

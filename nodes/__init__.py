@@ -1,17 +1,9 @@
-"""LangGraph node implementations."""
+"""LangGraph node implementations.
 
-from nodes.booking import booking_node
-from nodes.classifier import classify_intent
-from nodes.composer import compose_response_node
-from nodes.history import history_node
-from nodes.medical_search_node import medical_search_node
-from nodes.records import records_node
+This package's modules are imported lazily — `nodes.history` pulls FAISS via
+`tools.vector_index`, which is a heavy dep we don't want forced on tests that
+only touch one node (e.g. tests/test_safety.py).
 
-__all__ = [
-    "classify_intent",
-    "booking_node",
-    "records_node",
-    "history_node",
-    "medical_search_node",
-    "compose_response_node",
-]
+The public API (the symbols the graph imports) lives in submodules; callers
+should `from nodes.X import Y`, not `from nodes import Y`.
+"""
