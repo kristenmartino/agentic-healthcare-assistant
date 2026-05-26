@@ -37,17 +37,28 @@ def medical_search(
 
     Tries Tavily first if a key is provided, then DuckDuckGo, then a deterministic
     stub (so the graph still completes when no internet is available).
+
+    Empty results from a real backend (e.g. DDG rate-limited and returns []
+    without raising) are treated the same as exceptions — fall through to the
+    next backend rather than letting the caller see an empty list. The stub
+    is the floor; we never hand back []
     """
     tavily_api_key = tavily_api_key or os.getenv("TAVILY_API_KEY")
 
     if tavily_api_key:
         try:
-            return _tavily_search(query, tavily_api_key, top_k)
+            results = _tavily_search(query, tavily_api_key, top_k)
+            if results:
+                return results
+            logger.warning("Tavily returned empty results — falling back to DuckDuckGo")
         except Exception as exc:
             logger.warning("Tavily search failed: %s — falling back to DuckDuckGo", exc)
 
     try:
-        return _ddg_search(query, top_k)
+        results = _ddg_search(query, top_k)
+        if results:
+            return results
+        logger.warning("DuckDuckGo returned empty results — falling back to stub")
     except Exception as exc:
         logger.warning("DuckDuckGo search failed: %s — falling back to stub", exc)
 
