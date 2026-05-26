@@ -148,9 +148,16 @@ def main() -> int:
         return 1
 
     # Reset EHR for determinism
-    from tools.ehr_db import initialize_ehr
-    if Path(settings.records_xlsx_path).exists():
-        initialize_ehr(settings.records_xlsx_path, settings.ehr_db_path)
+    if settings.ehr_backend == "sqlite":
+        from tools.ehr_db import initialize_ehr
+        if Path(settings.records_xlsx_path).exists():
+            initialize_ehr(settings.records_xlsx_path, settings.ehr_db_path)
+    elif settings.ehr_backend == "fhir_fixture":
+        writes = Path(settings.fhir_fixture_dir) / "patients_writes.json"
+        if writes.exists():
+            writes.unlink()
+        from tools.ehr import clear_backend_cache
+        clear_backend_cache()
 
     print("=" * 70)
     print(f" LLM-Judge Evaluation — Healthcare Assistant")

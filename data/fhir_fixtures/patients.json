@@ -1,0 +1,85 @@
+[
+  {
+    "resourceType": "Patient",
+    "id": "anjali-mehra",
+    "active": true,
+    "name": [
+      {"use": "official", "given": ["Anjali"], "family": "Mehra", "text": "Anjali Mehra"}
+    ],
+    "gender": "female",
+    "birthDate": "1986",
+    "telecom": [
+      {"system": "phone", "value": "+91-98765-43210"},
+      {"system": "email", "value": "anjali.mehra@example.com"}
+    ],
+    "address": [
+      {"text": "12 MG Road, Bengaluru, Karnataka, India"}
+    ]
+  },
+  {
+    "resourceType": "Patient",
+    "id": "david-thompson",
+    "active": true,
+    "name": [
+      {"use": "official", "given": ["David"], "family": "Thompson", "text": "David Thompson"}
+    ],
+    "gender": "male",
+    "birthDate": "1968",
+    "telecom": [
+      {"system": "phone", "value": "+1-415-555-0142"},
+      {"system": "email", "value": "david.thompson@example.com"}
+    ],
+    "address": [
+      {"text": "418 Castro St, San Francisco, CA 94114, USA"}
+    ]
+  },
+  {
+    "resourceType": "Patient",
+    "id": "ramesh-kulkarni",
+    "active": true,
+    "name": [
+      {"use": "official", "given": ["Ramesh"], "family": "Kulkarni", "text": "Ramesh Kulkarni"}
+    ],
+    "gender": "male",
+    "birthDate": "1955",
+    "telecom": [
+      {"system": "phone", "value": "+91-99887-66554"}
+    ],
+    "address": [
+      {"text": "27 FC Road, Pune, Maharashtra, India"}
+    ]
+  },
+  {
+    "resourceType": "Patient",
+    "id": "rebeca-nagle",
+    "active": true,
+    "name": [
+      {"use": "official", "given": ["Rebeca"], "family": "Nagle", "text": "Rebeca Nagle"}
+    ],
+    "gender": "female",
+    "birthDate": "1979",
+    "telecom": [
+      {"system": "phone", "value": "+1-202-555-0188"},
+      {"system": "email", "value": "rebeca.nagle@example.com"}
+    ],
+    "address": [
+      {"text": "1500 K St NW, Washington, DC 20005, USA"}
+    ]
+  },
+  {
+    "resourceType": "Patient",
+    "id": "priya-narayan",
+    "active": true,
+    "name": [
+      {"use": "official", "given": ["Priya"], "family": "Narayan", "text": "Priya Narayan"}
+    ],
+    "gender": "female",
+    "birthDate": "1992",
+    "telecom": [
+      {"system": "phone", "value": "+91-99001-12345"}
+    ],
+    "address": [
+      {"text": "8 Anna Salai, Chennai, Tamil Nadu, India"}
+    ]
+  }
+]

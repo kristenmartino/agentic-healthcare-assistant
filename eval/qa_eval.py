@@ -182,11 +182,20 @@ def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     settings = load_settings()
 
-    # Reset the EHR DB so records-1 (expecting insert) is deterministic.
+    # Reset the EHR store so records-1 (expecting insert) is deterministic.
     # Without this, John Doe might already exist from a prior run → update, not insert.
-    from tools.ehr_db import initialize_ehr
-    if Path(settings.records_xlsx_path).exists():
-        initialize_ehr(settings.records_xlsx_path, settings.ehr_db_path)
+    if settings.ehr_backend == "sqlite":
+        from tools.ehr_db import initialize_ehr
+        if Path(settings.records_xlsx_path).exists():
+            initialize_ehr(settings.records_xlsx_path, settings.ehr_db_path)
+    elif settings.ehr_backend == "fhir_fixture":
+        # Wipe the writes overlay so "John Doe" inserts cleanly.
+        writes = Path(settings.fhir_fixture_dir) / "patients_writes.json"
+        if writes.exists():
+            writes.unlink()
+        from tools.ehr import clear_backend_cache
+        clear_backend_cache()
+    # `fhir` (live server) is left alone — we don't mutate a real server.
 
     print("=" * 70)
     print(f" QA Evaluation — Healthcare Assistant")

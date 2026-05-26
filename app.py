@@ -20,7 +20,7 @@ import streamlit as st
 from config import load_settings
 from graph import build_workflow
 from tools.appointments import list_recent_bookings
-from tools.ehr_db import list_patients
+from tools.ehr import list_patients
 from utils import (
     format_appointment_time,
     node_label,
@@ -74,7 +74,7 @@ def get_settings():
 
 @st.cache_data(ttl=10, show_spinner=False)
 def get_patients():
-    return list_patients(get_settings().ehr_db_path)
+    return list_patients(get_settings())
 
 
 @st.cache_data(ttl=10, show_spinner=False)
@@ -90,6 +90,7 @@ workflow = get_workflow()
 with st.sidebar:
     st.header("🏥 Healthcare Assistant")
     st.caption(f"LLM: **{settings.llm_provider}** ({settings.llm_model})")
+    st.caption(f"EHR backend: **{settings.ehr_backend}**")
     if settings.llm_provider == "stub":
         st.warning(
             "Running in **stub mode** — LLM responses are templated. "
@@ -308,6 +309,8 @@ with col_side:
         st.json({
             "llm_provider": settings.llm_provider,
             "llm_model": settings.llm_model,
+            "ehr_backend": settings.ehr_backend,
+            "fhir_base_url": settings.fhir_base_url if settings.ehr_backend == "fhir" else None,
             "enable_persistence": settings.enable_persistence,
             "enable_parallel_fanout": settings.enable_parallel_fanout,
             "ehr_db_path": settings.ehr_db_path,

@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from config import load_settings
 from state import HealthcareState
 from tools.appointments import book_appointment
-from tools.ehr_db import find_patient_by_name
+from tools.ehr import find_patient_by_name
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ def booking_node(state: HealthcareState) -> dict:
     # Resolve patient_id from name if not already set
     if not patient_id and patient_name and patient_name != "Walk-in Patient":
         try:
-            patient = find_patient_by_name(settings.ehr_db_path, patient_name)
+            patient = find_patient_by_name(patient_name, settings)
             if patient:
                 patient_id = patient["patient_id"]
         except Exception as exc:

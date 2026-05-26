@@ -10,6 +10,10 @@ data/*.json
 data/*.bin
 data/*.npy
 
+# Keep FHIR fixture JSON (checked in as test data); ignore mutable write overlay.
+!data/fhir_fixtures/
+data/fhir_fixtures/patients_writes.json
+
 # Python
 __pycache__/
 *.pyc

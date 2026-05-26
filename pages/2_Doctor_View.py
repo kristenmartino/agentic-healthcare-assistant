@@ -31,7 +31,7 @@ from tools.appointments import (
     get_specialty_stats,
     list_all_bookings,
 )
-from tools.ehr_db import list_patients
+from tools.ehr import list_patients
 from utils import format_appointment_time, format_date
 
 
@@ -85,7 +85,7 @@ def _doctors():
 
 @st.cache_data(ttl=10, show_spinner=False)
 def _patients():
-    return list_patients(_settings().ehr_db_path)
+    return list_patients(_settings())
 
 
 def _refresh_all_caches():

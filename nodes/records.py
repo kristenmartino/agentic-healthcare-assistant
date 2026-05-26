@@ -11,7 +11,7 @@ from typing import Optional
 
 from config import load_settings
 from state import HealthcareState
-from tools.ehr_db import add_or_update_patient, find_patient_by_name
+from tools.ehr import add_or_update_patient, find_patient_by_name
 
 logger = logging.getLogger(__name__)
 
@@ -80,18 +80,19 @@ def records_node(state: HealthcareState) -> dict:
     fields = _parse_fields(user_input, patient_name)
 
     # If patient already exists, this is an update; merge with existing fields
-    existing = find_patient_by_name(settings.ehr_db_path, patient_name)
+    existing = find_patient_by_name(patient_name, settings)
     if existing:
         fields["patient_id"] = existing["patient_id"]
 
     try:
-        result = add_or_update_patient(settings.ehr_db_path, fields)
+        result = add_or_update_patient(fields, settings)
         return {
             "patient_id": result["patient_id"],
             "record_change": result,
             "tool_log": [{
                 "node": "records",
                 "tool": "add_or_update_patient",
+                "ehr_backend": settings.ehr_backend,
                 "operation": result["operation"],
                 "patient_id": result["patient_id"],
                 "fields_set": list(fields.keys()),

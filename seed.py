@@ -22,12 +22,20 @@ def main() -> None:
 
     print("=" * 60)
     print(" Healthcare Assistant — Seed Script")
+    print(f" EHR backend: {settings.ehr_backend}")
     print("=" * 60)
 
-    # 1. EHR
-    print("\n[1/3] Loading records.xlsx → EHR SQLite ...")
-    ehr_result = initialize_ehr(settings.records_xlsx_path, settings.ehr_db_path)
-    print(f"      {ehr_result}")
+    # 1. EHR — only the SQLite backend needs xlsx → DB seeding.
+    if settings.ehr_backend == "sqlite":
+        print("\n[1/3] Loading records.xlsx → EHR SQLite ...")
+        ehr_result = initialize_ehr(settings.records_xlsx_path, settings.ehr_db_path)
+        print(f"      {ehr_result}")
+    elif settings.ehr_backend == "fhir_fixture":
+        print("\n[1/3] EHR backend is fhir_fixture — using bundled JSON in "
+              f"{settings.fhir_fixture_dir} (skip).")
+    else:  # fhir (live server)
+        print("\n[1/3] EHR backend is fhir — assuming the server at "
+              f"{settings.fhir_base_url} is already populated (skip).")
 
     # 2. Appointments
     print("\n[2/3] Pre-generating appointment slots ...")

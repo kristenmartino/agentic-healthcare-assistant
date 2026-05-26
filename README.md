@@ -115,6 +115,18 @@ All from the instructor-provided folder `../Datasets_New/Agentic Healthcare Assi
 
 22 chunks total across 4 PDFs, 512-dim TF-IDF embeddings (or 384-dim sentence-transformer when installed).
 
+## EHR backends
+
+The EHR backing store is pluggable via `EHR_BACKEND` (`tools/ehr.py` dispatches). All three backends satisfy the same Protocol (`list_patients`, `find_patient_by_name`, `add_or_update_patient`, `get_patient_clinical_context`), so swapping is a one-env-var change with no code edits.
+
+| Backend | Trigger | What it does | When to use |
+|---|---|---|---|
+| `sqlite` | `EHR_BACKEND=sqlite` (default) | Loads `records.xlsx` into `data/ehr.sqlite`; freeform `summary` field per patient. | Course-end demo; matches the instructor's dataset 1:1. |
+| `fhir` | `EHR_BACKEND=fhir`, `FHIR_BASE_URL=…` | Talks live to a FHIR R4 server (HAPI, AWS HealthLake, Microsoft FHIR, Epic on FHIR sandbox). Reads `Patient`, `Condition`, `Observation` resources; writes `Patient` via POST/PUT. | Production-shaped integration. Set `FHIR_BASE_URL` to your server. |
+| `fhir_fixture` | `EHR_BACKEND=fhir_fixture` | Reads FHIR-shape JSON from `data/fhir_fixtures/` (5 synthetic patients with Conditions + recent Observations). Writes go to an overlay file. | Offline FHIR development & CI; demonstrates the FHIR shape without a server. |
+
+History queries on the FHIR backends are enriched with the patient's active Conditions (SNOMED-coded) and most-recent Observations (LOINC-coded), which the LLM summarizer cites in its output.
+
 ## Project layout
 
 ```

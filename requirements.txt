@@ -31,3 +31,7 @@ requests>=2.31.0
 python-dotenv>=1.0.0
 pydantic>=2.5.0
 typing-extensions>=4.8.0
+
+# Test-time only (kept here for one-step installation in CI / dev)
+pytest>=8.0.0
+responses>=0.25.0

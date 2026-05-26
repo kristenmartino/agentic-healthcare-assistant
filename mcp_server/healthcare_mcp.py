@@ -39,7 +39,7 @@ from tools.appointments import (
     get_doctors_for_dashboard,
     list_doctors_for_specialty,
 )
-from tools.ehr_db import (
+from tools.ehr import (
     add_or_update_patient as _upsert_patient,
     find_patient_by_name,
     list_patients as _list_patients,
@@ -88,7 +88,7 @@ def tool_book_appointment(
     """
     s = _build_settings()
     # Look up patient_id from the EHR; fall back to a synthetic walk-in ID.
-    patient = find_patient_by_name(s.ehr_db_path, patient_name)
+    patient = find_patient_by_name(patient_name, s)
     patient_id = patient["patient_id"] if patient else f"walkin-{abs(hash(patient_name)) % 10**8:08d}"
     return _book(
         s.appointments_db_path,
@@ -110,13 +110,13 @@ def tool_list_doctors(specialty: Optional[str] = None) -> list[dict]:
 def tool_find_patient(name: str) -> Optional[dict]:
     """Find a patient by case-insensitive name match. Returns first hit or None."""
     s = _build_settings()
-    return find_patient_by_name(s.ehr_db_path, name)
+    return find_patient_by_name(name, s)
 
 
 def tool_list_patients() -> list[dict]:
     """List all patients (id, name, age, gender, summary)."""
     s = _build_settings()
-    return _list_patients(s.ehr_db_path)
+    return _list_patients(s)
 
 
 def tool_upsert_patient(
@@ -134,7 +134,6 @@ def tool_upsert_patient(
     """
     s = _build_settings()
     return _upsert_patient(
-        s.ehr_db_path,
         {
             "name": name,
             "age": age,
@@ -144,6 +143,7 @@ def tool_upsert_patient(
             "address": address,
             "summary": summary,
         },
+        s,
     )
 
 
@@ -155,7 +155,7 @@ def tool_get_history(patient_name: str) -> dict:
     summarize themselves with their own model.
     """
     s = _build_settings()
-    record = find_patient_by_name(s.ehr_db_path, patient_name)
+    record = find_patient_by_name(patient_name, s)
     chunks = []
     try:
         chunks = search_index(

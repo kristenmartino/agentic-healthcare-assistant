@@ -11,7 +11,8 @@ from config import load_settings
 from llm import LLMUnavailable, chat
 from prompts import HISTORY_SUMMARY_PROMPT
 from state import HealthcareState
-from tools.ehr_db import find_patient_by_name
+from tools.ehr import find_patient_by_name, get_patient_clinical_context
+from tools.fhir_client import condition_summary
 from tools.vector_index import search_index
 
 logger = logging.getLogger(__name__)
@@ -32,7 +33,7 @@ def history_node(state: HealthcareState) -> dict:
         }
 
     # 1. Look up structured record
-    record = find_patient_by_name(settings.ehr_db_path, patient_name)
+    record = find_patient_by_name(patient_name, settings)
     record_block = ""
     if record:
         parts = [f"Name: {record['name']}"]
@@ -44,6 +45,20 @@ def history_node(state: HealthcareState) -> dict:
             parts.append(f"Summary: {record['summary']}")
         if record.get("address"):
             parts.append(f"Address: {record['address']}")
+        # 1b. Enrich with FHIR Conditions + recent Observations when available
+        clinical = get_patient_clinical_context(record["patient_id"], settings)
+        cond_text = condition_summary(clinical.get("conditions") or [])
+        if cond_text:
+            parts.append(f"Active conditions: {cond_text}")
+        obs = clinical.get("observations") or []
+        if obs:
+            obs_lines = []
+            for o in obs:
+                val = o.get("value")
+                unit = o.get("unit") or ""
+                date = o.get("date") or ""
+                obs_lines.append(f"  - {o.get('name')}: {val} {unit} ({date})".rstrip())
+            parts.append("Recent observations:\n" + "\n".join(obs_lines))
         record_block = "\n".join(parts)
     else:
         record_block = f"No structured record found for {patient_name}."
@@ -95,7 +110,9 @@ def history_node(state: HealthcareState) -> dict:
         "tool_log": [{
             "node": "history",
             "tool": "find_patient_by_name+search_index",
+            "ehr_backend": settings.ehr_backend,
             "patient_name": patient_name,
+            "patient_id": record.get("patient_id") if record else None,
             "record_found": bool(record),
             "pdf_chunks_retrieved": len(chunks),
         }],
