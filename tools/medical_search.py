@@ -27,6 +27,34 @@ _TRUSTED_DOMAINS = (
 _SITE_FILTER = " OR ".join(f"site:{d}" for d in _TRUSTED_DOMAINS)
 
 
+def configured_backend(tavily_api_key: str | None = None) -> str:
+    """Return the search backend the chain will try first.
+
+    "tavily" if a Tavily key is configured, else "duckduckgo". This is the
+    *intended* backend — at query time DDG may rate-limit and the chain will
+    fall through to the deterministic stub. Use `effective_backend()` after a
+    query to see which one actually produced results.
+    """
+    if tavily_api_key or os.getenv("TAVILY_API_KEY"):
+        return "tavily"
+    return "duckduckgo"
+
+
+def effective_backend(results: list[dict]) -> str:
+    """Return the backend that actually produced these results.
+
+    Reads the per-result `source` field. Returns "stub" if every result is
+    stub, the first non-stub source otherwise, "unknown" on empty input.
+    """
+    if not results:
+        return "unknown"
+    sources = {r.get("source", "unknown") for r in results}
+    non_stub = sources - {"stub"}
+    if non_stub:
+        return next(iter(non_stub))
+    return "stub"
+
+
 def medical_search(
     query: str,
     *,

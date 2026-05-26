@@ -7,7 +7,7 @@ from config import load_settings
 from llm import LLMUnavailable, chat
 from prompts import MEDICAL_SEARCH_PROMPT
 from state import HealthcareState
-from tools.medical_search import medical_search
+from tools.medical_search import effective_backend, medical_search
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +76,7 @@ def medical_search_node(state: HealthcareState) -> dict:
     # We attach the synthesis as a special pseudo-result so the composer has it.
     medical_info = [{"synthesis": synthesis}] + results
 
+    backend = effective_backend(results)
     return {
         "medical_info": medical_info,
         "sources": sources,
@@ -84,6 +85,7 @@ def medical_search_node(state: HealthcareState) -> dict:
             "tool": "medical_search",
             "query": query,
             "results_count": len(results),
-            "backend": results[0].get("source") if results else "none",
+            "backend": backend,
+            "degraded": backend == "stub",
         }],
     }

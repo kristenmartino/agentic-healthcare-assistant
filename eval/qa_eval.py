@@ -212,6 +212,19 @@ def evaluate_one(workflow, gt: dict, thread_id: str) -> dict:
         if not any(n in resp for n in ("911", "988", "112", "999", "108")):
             errors.append("emergency response missing crisis phone number")
 
+    # Track the effective search backend so callers can distinguish a real
+    # MedlinePlus/WHO/Tavily citation from a stub-fallback. The case still
+    # PASSES on stub — Tier 1 grades plumbing — but the summary surfaces
+    # `passed_with_stub_fallback` so reviewers aren't fooled into thinking
+    # search actually worked when it didn't.
+    search_backend: str | None = None
+    if result.get("medical_info"):
+        from tools.medical_search import effective_backend
+        # medical_info[0] is the synthesis pseudo-record; real results follow.
+        raw_results = [r for r in result["medical_info"] if "synthesis" not in r]
+        if raw_results:
+            search_backend = effective_backend(raw_results)
+
     return {
         "id": gt["id"],
         "query": gt["query"],
@@ -219,6 +232,7 @@ def evaluate_one(workflow, gt: dict, thread_id: str) -> dict:
         "errors": errors,
         "latency_seconds": round(latency, 3),
         "actual_intents": list(got_intents),
+        "search_backend": search_backend,
         "response_excerpt": (result.get("response") or "")[:200],
     }
 
@@ -248,10 +262,14 @@ def main() -> int:
     from tools.appointments import ensure_future_slots
     slot_status = ensure_future_slots(settings.appointments_db_path)
 
+    from tools.medical_search import configured_backend
+    intended_search = configured_backend(settings.tavily_api_key)
+
     print("=" * 70)
     print(" QA Evaluation — Healthcare Assistant")
     print(f" LLM provider: {settings.llm_provider} ({settings.llm_model})")
     print(f" EHR backend: {settings.ehr_backend}")
+    print(f" Search backend (intended): {intended_search}")
     print(f" Slot freshness: {slot_status}")
     print(f" {len(GROUND_TRUTH)} ground-truth cases")
     print("=" * 70)
@@ -264,8 +282,15 @@ def main() -> int:
         r = evaluate_one(workflow, gt, thread_id)
         results.append(r)
         status = "✅ PASS" if r["passed"] else "❌ FAIL"
-        print(f"[{i:2d}/{len(GROUND_TRUTH)}] {status} {gt['id']:12s} "
-              f"({r['latency_seconds']:.2f}s) — {gt['query'][:60]}")
+        # Flag passes that only succeeded via the stub fallback — the case
+        # technically routed correctly, but the search backend was degraded
+        # so no real citations were returned. Surfacing this prevents
+        # "14/14 PASS" from masking "DDG was rate-limited the whole run".
+        stub_flag = ""
+        if r["passed"] and r.get("search_backend") == "stub":
+            stub_flag = " ⚠ stub-fallback"
+        print(f"[{i:2d}/{len(GROUND_TRUTH)}] {status} {gt['id']:18s} "
+              f"({r['latency_seconds']:.2f}s){stub_flag} — {gt['query'][:55]}")
         for err in r["errors"]:
             print(f"        - {err}")
 
@@ -273,13 +298,31 @@ def main() -> int:
     pass_rate = passed / len(results)
     avg_latency = sum(r["latency_seconds"] for r in results) / len(results)
 
+    # Count cases that PASSED but only because the stub took over. These are
+    # "plumbing OK, search degraded" — useful diagnostic for portfolio reviewers
+    # so they don't read a 100% pass rate as "search works end-to-end".
+    passed_with_stub_fallback = sum(
+        1 for r in results
+        if r["passed"] and r.get("search_backend") == "stub"
+    )
+    search_cases = sum(1 for r in results if r.get("search_backend") is not None)
+    real_search_passes = sum(
+        1 for r in results
+        if r["passed"] and r.get("search_backend") not in (None, "stub")
+    )
+
     summary = {
         "timestamp": datetime.now().isoformat(),
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model,
+        "ehr_backend": settings.ehr_backend,
+        "search_backend_intended": intended_search,
         "total": len(results),
         "passed": passed,
         "pass_rate": round(pass_rate, 3),
+        "search_cases": search_cases,
+        "real_search_passes": real_search_passes,
+        "passed_with_stub_fallback": passed_with_stub_fallback,
         "average_latency_seconds": round(avg_latency, 3),
     }
 
