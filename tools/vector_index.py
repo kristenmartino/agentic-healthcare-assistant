@@ -211,7 +211,7 @@ def search_index(query: str, index_path: str, chunks_path: str, top_k: int = 5) 
         scores = scores_full[ids]
 
     results = []
-    for score, i in zip(scores, ids, strict=False):
+    for score, i in zip(scores, ids):
         if i < 0 or i >= len(chunks):
             continue
         results.append({

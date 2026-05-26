@@ -120,7 +120,7 @@ def initialize_ehr(records_xlsx_path: str, db_path: str) -> dict[str, int]:
 
     for r in rows[1:]:
         raw_count += 1
-        record = dict(zip(headers, r, strict=False))
+        record = dict(zip(headers, r))
 
         name = col(record, "Name")
         if not name:
