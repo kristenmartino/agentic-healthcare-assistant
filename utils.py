@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 
-def format_appointment_time(iso_str: Optional[str]) -> str:
+def format_appointment_time(iso_str: str | None) -> str:
     """ISO datetime → 'Tue, May 5 · 9:00 AM'. Returns the input unchanged on parse failure."""
     if not iso_str:
         return ""
@@ -21,7 +20,7 @@ def format_appointment_time(iso_str: Optional[str]) -> str:
         return dt.strftime("%a, %b %#d · %#I:%M %p")
 
 
-def format_date(iso_str: Optional[str]) -> str:
+def format_date(iso_str: str | None) -> str:
     """ISO date → 'Tue, May 5'."""
     if not iso_str:
         return ""

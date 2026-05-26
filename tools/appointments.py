@@ -12,10 +12,10 @@ from __future__ import annotations
 import logging
 import random
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ def book_appointment(
     patient_id: str,
     patient_name: str,
     specialty: str,
-    preferred_date: Optional[str] = None,
+    preferred_date: str | None = None,
 ) -> dict:
     """Book the earliest available slot matching specialty (and date if given).
 

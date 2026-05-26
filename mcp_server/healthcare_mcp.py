@@ -28,7 +28,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional
 
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -36,13 +35,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config import load_settings
 from tools.appointments import (
     book_appointment as _book,
+)
+from tools.appointments import (
     get_doctors_for_dashboard,
     list_doctors_for_specialty,
 )
 from tools.audit import log_access, query_audit
 from tools.ehr import (
     add_or_update_patient as _upsert_patient,
+)
+from tools.ehr import (
     find_patient_by_name,
+)
+from tools.ehr import (
     list_patients as _list_patients,
 )
 from tools.medical_search import medical_search as _medical_search
@@ -74,7 +79,7 @@ def _build_settings():
 def tool_book_appointment(
     patient_name: str,
     specialty: str,
-    preferred_date: Optional[str] = None,
+    preferred_date: str | None = None,
 ) -> dict:
     """Book the earliest available appointment slot for the given specialty.
 
@@ -111,7 +116,7 @@ def tool_book_appointment(
     return appointment
 
 
-def tool_list_doctors(specialty: Optional[str] = None) -> list[dict]:
+def tool_list_doctors(specialty: str | None = None) -> list[dict]:
     """List doctors. Filter by specialty if provided."""
     s = _build_settings()
     if specialty:
@@ -119,7 +124,7 @@ def tool_list_doctors(specialty: Optional[str] = None) -> list[dict]:
     return get_doctors_for_dashboard(s.appointments_db_path)
 
 
-def tool_find_patient(name: str) -> Optional[dict]:
+def tool_find_patient(name: str) -> dict | None:
     """Find a patient by case-insensitive name match. Returns first hit or None."""
     s = _build_settings()
     return find_patient_by_name(name, s, actor="mcp")
@@ -133,12 +138,12 @@ def tool_list_patients() -> list[dict]:
 
 def tool_upsert_patient(
     name: str,
-    age: Optional[int] = None,
-    gender: Optional[str] = None,
-    phone: Optional[str] = None,
-    email: Optional[str] = None,
-    address: Optional[str] = None,
-    summary: Optional[str] = None,
+    age: int | None = None,
+    gender: str | None = None,
+    phone: str | None = None,
+    email: str | None = None,
+    address: str | None = None,
+    summary: str | None = None,
 ) -> dict:
     """Add a new patient or update an existing one.
 
@@ -207,8 +212,8 @@ def tool_medical_search(query: str, top_k: int = 4) -> list[dict]:
 
 
 def tool_get_audit_log(
-    patient_id: Optional[str] = None,
-    action_prefix: Optional[str] = None,
+    patient_id: str | None = None,
+    action_prefix: str | None = None,
     limit: int = 50,
 ) -> list[dict]:
     """Read the PHI audit log.

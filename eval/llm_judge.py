@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -33,9 +32,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import load_settings
+from eval.qa_eval import GROUND_TRUTH
 from graph import build_workflow
 from llm import LLMUnavailable, chat
-from eval.qa_eval import GROUND_TRUTH
 
 logger = logging.getLogger(__name__)
 
@@ -160,9 +159,9 @@ def main() -> int:
         clear_backend_cache()
 
     print("=" * 70)
-    print(f" LLM-Judge Evaluation — Healthcare Assistant")
+    print(" LLM-Judge Evaluation — Healthcare Assistant")
     print(f" Provider: {settings.llm_provider} ({settings.llm_model})")
-    print(f" Judge model: same (set JUDGE_MODEL to override — not yet wired)")
+    print(" Judge model: same (set JUDGE_MODEL to override — not yet wired)")
     print(f" {len(GROUND_TRUTH)} cases × 3 dimensions = {len(GROUND_TRUTH) * 3} scores")
     print("=" * 70)
 

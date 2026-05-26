@@ -22,7 +22,7 @@ import json
 import logging
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Protocol
 
 from config import Settings, load_settings
 
@@ -35,7 +35,7 @@ class EHRBackend(Protocol):
     """Every backend implements these three operations."""
 
     def list_patients(self) -> list[dict]: ...
-    def find_patient_by_name(self, name: str) -> Optional[dict]: ...
+    def find_patient_by_name(self, name: str) -> dict | None: ...
     def add_or_update_patient(self, fields: dict) -> dict: ...
     def get_patient_clinical_context(self, patient_id: str) -> dict:
         """Optional: conditions, observations. Default: empty dict."""
@@ -54,7 +54,7 @@ class _SqliteBackend:
         from tools.ehr_db import list_patients as _list
         return _list(self.db_path)
 
-    def find_patient_by_name(self, name: str) -> Optional[dict]:
+    def find_patient_by_name(self, name: str) -> dict | None:
         from tools.ehr_db import find_patient_by_name as _find
         return _find(self.db_path, name)
 
@@ -91,7 +91,7 @@ class _FhirBackend:
             out.append(patient)
         return out
 
-    def find_patient_by_name(self, name: str) -> Optional[dict]:
+    def find_patient_by_name(self, name: str) -> dict | None:
         from tools.fhir_client import condition_summary, to_internal_patient
         hits = self._client.search_patients(name=name, count=1)
         if not hits:
@@ -110,7 +110,7 @@ class _FhirBackend:
             from_internal_patient,
             to_internal_patient,
         )
-        before: Optional[dict] = None
+        before: dict | None = None
         if fields.get("name"):
             before = self.find_patient_by_name(fields["name"])
         # Carry forward the existing FHIR id if we matched
@@ -168,7 +168,7 @@ class _FhirFixtureBackend:
 
     def __init__(self, fixture_dir: str):
         self.fixture_dir = Path(fixture_dir)
-        self._patients_cache: Optional[list[dict]] = None
+        self._patients_cache: list[dict] | None = None
         self._writes_path = self.fixture_dir / "patients_writes.json"
 
     def _load(self, filename: str) -> list[dict]:
@@ -206,7 +206,7 @@ class _FhirFixtureBackend:
             out.append(patient)
         return out
 
-    def find_patient_by_name(self, name: str) -> Optional[dict]:
+    def find_patient_by_name(self, name: str) -> dict | None:
         if not name:
             return None
         needle = name.strip().lower()
@@ -293,7 +293,7 @@ def _backend_for(backend: str, db_path: str, fhir_url: str,
     return _SqliteBackend(db_path)
 
 
-def get_backend(settings: Optional[Settings] = None) -> EHRBackend:
+def get_backend(settings: Settings | None = None) -> EHRBackend:
     """Return the configured backend (cached on settings tuple)."""
     s = settings or load_settings()
     return _backend_for(
@@ -312,7 +312,7 @@ def get_backend(settings: Optional[Settings] = None) -> EHRBackend:
 # in the audit table.
 
 def list_patients(
-    settings: Optional[Settings] = None,
+    settings: Settings | None = None,
     *,
     actor: str = "system",
 ) -> list[dict]:
@@ -325,10 +325,10 @@ def list_patients(
 
 def find_patient_by_name(
     name: str,
-    settings: Optional[Settings] = None,
+    settings: Settings | None = None,
     *,
     actor: str = "system",
-) -> Optional[dict]:
+) -> dict | None:
     from tools.audit import log_access
     record = get_backend(settings).find_patient_by_name(name)
     log_access(
@@ -344,7 +344,7 @@ def find_patient_by_name(
 
 def add_or_update_patient(
     fields: dict,
-    settings: Optional[Settings] = None,
+    settings: Settings | None = None,
     *,
     actor: str = "system",
 ) -> dict:
@@ -373,7 +373,7 @@ def add_or_update_patient(
 
 def get_patient_clinical_context(
     patient_id: str,
-    settings: Optional[Settings] = None,
+    settings: Settings | None = None,
     *,
     actor: str = "system",
 ) -> dict:

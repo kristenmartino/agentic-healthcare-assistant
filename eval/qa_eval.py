@@ -243,7 +243,7 @@ def main() -> int:
     # `fhir` (live server) is left alone — we don't mutate a real server.
 
     print("=" * 70)
-    print(f" QA Evaluation — Healthcare Assistant")
+    print(" QA Evaluation — Healthcare Assistant")
     print(f" LLM provider: {settings.llm_provider} ({settings.llm_model})")
     print(f" {len(GROUND_TRUTH)} ground-truth cases")
     print("=" * 70)

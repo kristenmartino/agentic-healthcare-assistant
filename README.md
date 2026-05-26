@@ -83,6 +83,15 @@ streamlit run app.py
 python eval/qa_eval.py
 ```
 
+### Docker
+
+```bash
+docker compose up --build
+# App on http://localhost:8501, HAPI FHIR on http://localhost:8080/fhir
+```
+
+The compose stack runs a HAPI FHIR R4 server alongside the app and sets `EHR_BACKEND=fhir` so the app talks to it. To run against the bundled fixtures instead (no FHIR container needed), set `EHR_BACKEND=fhir_fixture` in your `.env`.
+
 The app **runs without any API key** — falls back to a deterministic stub LLM and DuckDuckGo (or stub search if DDG is rate-limited / TLS-blocked). All 10 eval cases still pass in stub mode because they grade routing + state shape, not LLM prose quality.
 
 ## Stack

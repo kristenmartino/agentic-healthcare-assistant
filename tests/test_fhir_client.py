@@ -21,7 +21,6 @@ from tools.fhir_client import (  # noqa: E402
     to_internal_patient,
 )
 
-
 BASE = "https://fhir.example.com/baseR4"
 
 

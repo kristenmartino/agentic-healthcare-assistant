@@ -16,7 +16,6 @@ from nodes.safety import (
     safety_node,
 )
 
-
 # ---------- true positives ----------
 
 @pytest.mark.parametrize("text, expected_cat", [

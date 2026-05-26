@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 import requests
@@ -42,8 +42,8 @@ class FHIRClient:
         base_url: str,
         *,
         timeout: float = 10.0,
-        auth_header: Optional[str] = None,
-        session: Optional[requests.Session] = None,
+        auth_header: str | None = None,
+        session: requests.Session | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -84,7 +84,7 @@ class FHIRClient:
     def search_patients(
         self,
         *,
-        name: Optional[str] = None,
+        name: str | None = None,
         count: int = 20,
     ) -> list[dict]:
         """Search Patient resources. Name match is server-side substring."""
@@ -93,7 +93,7 @@ class FHIRClient:
             params["name"] = name
         return self._search("Patient", **params)
 
-    def get_patient(self, patient_id: str) -> Optional[dict]:
+    def get_patient(self, patient_id: str) -> dict | None:
         """Read a single Patient by FHIR resource id. Returns None on 404."""
         try:
             return self._request("GET", f"Patient/{quote(patient_id, safe='')}")
@@ -113,7 +113,7 @@ class FHIRClient:
         patient_id: str,
         *,
         count: int = 20,
-        category: Optional[str] = None,
+        category: str | None = None,
     ) -> list[dict]:
         params: dict[str, Any] = {"patient": patient_id, "_count": count, "_sort": "-date"}
         if category:
@@ -169,7 +169,7 @@ def _human_name(resource: dict) -> str:
     return n.get("text", "")
 
 
-def _age_from_birthdate(birthdate: Optional[str]) -> Optional[int]:
+def _age_from_birthdate(birthdate: str | None) -> int | None:
     """Compute integer age from an ISO birthDate string (YYYY or YYYY-MM-DD)."""
     if not birthdate:
         return None
@@ -182,14 +182,14 @@ def _age_from_birthdate(birthdate: Optional[str]) -> Optional[int]:
         return None
 
 
-def _telecom(resource: dict, system: str) -> Optional[str]:
+def _telecom(resource: dict, system: str) -> str | None:
     for t in resource.get("telecom") or []:
         if t.get("system") == system:
             return t.get("value")
     return None
 
 
-def _address(resource: dict) -> Optional[str]:
+def _address(resource: dict) -> str | None:
     addrs = resource.get("address") or []
     if not addrs:
         return None
@@ -294,7 +294,7 @@ def fhir_id_to_patient_id(fhir_id: str) -> str:
     return f"fhir:{fhir_id}"
 
 
-def patient_id_to_fhir_id(patient_id: str) -> Optional[str]:
+def patient_id_to_fhir_id(patient_id: str) -> str | None:
     """Reverse of `fhir_id_to_patient_id`. Returns None if not a FHIR id."""
     if patient_id.startswith("fhir:"):
         return patient_id.split(":", 1)[1]

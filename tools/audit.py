@@ -23,10 +23,11 @@ import json
 import logging
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
 
 from config import load_settings
 
@@ -74,13 +75,13 @@ def _ensure_schema(db_path: str) -> None:
 def log_access(
     actor: str,
     action: str,
-    resource_type: Optional[str] = None,
-    resource_id: Optional[str] = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
     *,
-    patient_id: Optional[str] = None,
+    patient_id: str | None = None,
     outcome: str = "success",
-    details: Optional[dict[str, Any]] = None,
-    db_path: Optional[str] = None,
+    details: dict[str, Any] | None = None,
+    db_path: str | None = None,
 ) -> None:
     """Write one audit event.
 
@@ -133,12 +134,12 @@ def _ensure_schema_inline(conn: sqlite3.Connection) -> None:
 
 def query_audit(
     *,
-    patient_id: Optional[str] = None,
-    action_prefix: Optional[str] = None,
-    actor: Optional[str] = None,
-    since: Optional[str] = None,
+    patient_id: str | None = None,
+    action_prefix: str | None = None,
+    actor: str | None = None,
+    since: str | None = None,
     limit: int = 100,
-    db_path: Optional[str] = None,
+    db_path: str | None = None,
 ) -> list[dict]:
     """Read recent audit events. Used by the Audit Log UI page."""
     if db_path is None:
@@ -187,7 +188,7 @@ def query_audit(
     return out
 
 
-def audit_summary(db_path: Optional[str] = None) -> dict:
+def audit_summary(db_path: str | None = None) -> dict:
     """Counts by action — for the Audit page header strip."""
     if db_path is None:
         db_path = load_settings().audit_db_path

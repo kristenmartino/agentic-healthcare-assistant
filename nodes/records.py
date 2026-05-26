@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 from config import load_settings
 from state import HealthcareState
@@ -16,7 +15,7 @@ from tools.ehr import add_or_update_patient, find_patient_by_name
 logger = logging.getLogger(__name__)
 
 
-def _parse_fields(text: str, name: Optional[str]) -> dict:
+def _parse_fields(text: str, name: str | None) -> dict:
     """Extract a record dict from free-form text."""
     fields: dict = {}
     if name:

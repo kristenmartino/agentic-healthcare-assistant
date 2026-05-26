@@ -19,7 +19,6 @@ from config import load_settings
 from tools.audit import audit_summary, query_audit
 from tools.ehr import list_patients
 
-
 st.set_page_config(
     page_title="Audit Log — Healthcare Assistant",
     page_icon="🔍",

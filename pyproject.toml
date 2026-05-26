@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-healthcare-assistant"
+version = "0.2.0"
+description = "LangGraph-based healthcare assistant: FHIR-backed EHR, audit-traceable PHI access, multi-intent fan-out routing, optional MCP server."
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [".venv", "venv", "data", "screenshots", "build", "dist"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",   # line length is enforced by formatter when used
+    "B008",   # FastAPI / Streamlit patterns sometimes need function-call defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B017"]
+"pages/*" = ["E402"]  # streamlit pages have st.set_page_config before other imports
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = false
+no_implicit_optional = true
+check_untyped_defs = false
+exclude = ["build/", "dist/", ".venv/"]

@@ -37,7 +37,6 @@ state across Streamlit reruns.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from langgraph.graph import END, START, StateGraph
 
@@ -90,7 +89,7 @@ def _route_after_classify(state: HealthcareState) -> list[str]:
     return targets
 
 
-def build_workflow(*, settings: Optional[Settings] = None, with_checkpoint: bool = True):
+def build_workflow(*, settings: Settings | None = None, with_checkpoint: bool = True):
     """Build and compile the Healthcare Assistant LangGraph workflow."""
     settings = settings or load_settings()
 
@@ -160,6 +159,7 @@ def _build_checkpointer(settings: Settings):
     """
     try:
         import sqlite3
+
         from langgraph.checkpoint.sqlite import SqliteSaver
     except ImportError as exc:
         logger.warning(
@@ -184,8 +184,8 @@ def _build_checkpointer(settings: Settings):
 
 # CLI: python graph.py "your query"
 if __name__ == "__main__":
-    import sys
     import json as _json
+    import sys
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 

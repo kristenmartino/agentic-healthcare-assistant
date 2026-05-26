@@ -14,13 +14,13 @@ Sections:
 """
 from __future__ import annotations
 
+# Allow imports from project root
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import streamlit as st
 
-# Allow imports from project root
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import load_settings
@@ -32,8 +32,7 @@ from tools.appointments import (
     list_all_bookings,
 )
 from tools.ehr import list_patients
-from utils import format_appointment_time, format_date
-
+from utils import format_appointment_time
 
 st.set_page_config(
     page_title="Doctor View — Healthcare Assistant",

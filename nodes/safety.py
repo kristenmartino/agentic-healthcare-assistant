@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 from state import HealthcareState
 
@@ -216,12 +215,12 @@ _LLM_SAFETY_PROMPT = (
 )
 
 
-def _llm_second_opinion(user_input: str) -> Optional[bool]:
+def _llm_second_opinion(user_input: str) -> bool | None:
     """Ask the configured LLM to confirm an emergency. Returns None on failure
     or stub provider (caller falls back to regex result)."""
     try:
         from config import load_settings
-        from llm import LLMUnavailable, chat
+        from llm import chat
         if load_settings().llm_provider == "stub":
             return None
         raw = chat(
