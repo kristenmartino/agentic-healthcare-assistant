@@ -74,7 +74,7 @@ def get_settings():
 
 @st.cache_data(ttl=10, show_spinner=False)
 def get_patients():
-    return list_patients(get_settings())
+    return list_patients(get_settings(), actor="patient_chat")
 
 
 @st.cache_data(ttl=10, show_spinner=False)

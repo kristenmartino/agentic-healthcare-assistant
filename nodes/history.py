@@ -33,7 +33,7 @@ def history_node(state: HealthcareState) -> dict:
         }
 
     # 1. Look up structured record
-    record = find_patient_by_name(patient_name, settings)
+    record = find_patient_by_name(patient_name, settings, actor="patient_chat")
     record_block = ""
     if record:
         parts = [f"Name: {record['name']}"]
@@ -46,7 +46,7 @@ def history_node(state: HealthcareState) -> dict:
         if record.get("address"):
             parts.append(f"Address: {record['address']}")
         # 1b. Enrich with FHIR Conditions + recent Observations when available
-        clinical = get_patient_clinical_context(record["patient_id"], settings)
+        clinical = get_patient_clinical_context(record["patient_id"], settings, actor="patient_chat")
         cond_text = condition_summary(clinical.get("conditions") or [])
         if cond_text:
             parts.append(f"Active conditions: {cond_text}")

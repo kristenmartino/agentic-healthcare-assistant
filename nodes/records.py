@@ -80,12 +80,12 @@ def records_node(state: HealthcareState) -> dict:
     fields = _parse_fields(user_input, patient_name)
 
     # If patient already exists, this is an update; merge with existing fields
-    existing = find_patient_by_name(patient_name, settings)
+    existing = find_patient_by_name(patient_name, settings, actor="patient_chat")
     if existing:
         fields["patient_id"] = existing["patient_id"]
 
     try:
-        result = add_or_update_patient(fields, settings)
+        result = add_or_update_patient(fields, settings, actor="patient_chat")
         return {
             "patient_id": result["patient_id"],
             "record_change": result,

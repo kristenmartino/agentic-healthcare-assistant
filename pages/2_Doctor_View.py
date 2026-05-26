@@ -85,7 +85,7 @@ def _doctors():
 
 @st.cache_data(ttl=10, show_spinner=False)
 def _patients():
-    return list_patients(_settings())
+    return list_patients(_settings(), actor="doctor_view")
 
 
 def _refresh_all_caches():

@@ -127,6 +127,26 @@ The EHR backing store is pluggable via `EHR_BACKEND` (`tools/ehr.py` dispatches)
 
 History queries on the FHIR backends are enriched with the patient's active Conditions (SNOMED-coded) and most-recent Observations (LOINC-coded), which the LLM summarizer cites in its output.
 
+## PHI access audit log
+
+Every patient-identifiable read or write produces one row in `data/audit.sqlite` (`tools/audit.py`). This is the lightest credible implementation of HIPAA's "examine activity in systems containing ePHI" requirement (45 CFR 164.312(b)). The audit DB is intentionally separate from the EHR DB — in a real deployment they live in different trust boundaries so a compromise of the EHR doesn't silently wipe the audit trail.
+
+Each event records:
+
+| Column | Example |
+|---|---|
+| `ts` | `2026-05-26T21:30:14Z` |
+| `actor` | `patient_chat`, `doctor_view`, `mcp`, `audit_view`, `system` |
+| `action` | `ehr.read`, `ehr.write`, `appointment.book`, `history.retrieve`, `medical_search.query`, `audit.read` |
+| `resource_type` / `resource_id` | `Patient` / `fhir:anjali-mehra`; `Appointment` / `slot_id` |
+| `patient_id` | indexed for "all access events for patient X" queries |
+| `outcome` | `success`, `not_found`, `error` |
+| `details` | JSON: query terms, fields changed, errors, sub-counts |
+
+The **🔍 Audit Log** Streamlit page (`pages/3_Audit_Log.py`) is the human view: summary strip, filters by patient/action/actor/time window, expandable JSON details, and CSV export. The MCP server exposes `get_audit_log` so an external client (Claude Desktop, a SIEM ingester) can pull the same data programmatically.
+
+Audit writes never raise — an audit failure is logged but cannot break a user-facing call. The risk model is "missing entry, not crashed app".
+
 ## Project layout
 
 ```

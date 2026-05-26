@@ -306,21 +306,88 @@ def get_backend(settings: Optional[Settings] = None) -> EHRBackend:
 
 
 # ---------- convenience pass-throughs ----------
+#
+# The `actor` arg threads through to the audit log so calls originating from
+# the patient chat, doctor view, MCP clients, and eval runs are distinguishable
+# in the audit table.
 
-def list_patients(settings: Optional[Settings] = None) -> list[dict]:
-    return get_backend(settings).list_patients()
+def list_patients(
+    settings: Optional[Settings] = None,
+    *,
+    actor: str = "system",
+) -> list[dict]:
+    from tools.audit import log_access
+    rows = get_backend(settings).list_patients()
+    log_access(actor, "ehr.list", "Patient", None,
+               details={"count": len(rows), "backend": (settings or load_settings()).ehr_backend})
+    return rows
 
 
-def find_patient_by_name(name: str, settings: Optional[Settings] = None) -> Optional[dict]:
-    return get_backend(settings).find_patient_by_name(name)
+def find_patient_by_name(
+    name: str,
+    settings: Optional[Settings] = None,
+    *,
+    actor: str = "system",
+) -> Optional[dict]:
+    from tools.audit import log_access
+    record = get_backend(settings).find_patient_by_name(name)
+    log_access(
+        actor, "ehr.read", "Patient",
+        record["patient_id"] if record else None,
+        patient_id=record["patient_id"] if record else None,
+        outcome="success" if record else "not_found",
+        details={"search_name": name,
+                 "backend": (settings or load_settings()).ehr_backend},
+    )
+    return record
 
 
-def add_or_update_patient(fields: dict, settings: Optional[Settings] = None) -> dict:
-    return get_backend(settings).add_or_update_patient(fields)
+def add_or_update_patient(
+    fields: dict,
+    settings: Optional[Settings] = None,
+    *,
+    actor: str = "system",
+) -> dict:
+    from tools.audit import log_access
+    try:
+        result = get_backend(settings).add_or_update_patient(fields)
+    except Exception as exc:
+        log_access(
+            actor, "ehr.write", "Patient", None,
+            patient_id=fields.get("patient_id"),
+            outcome="error",
+            details={"error": str(exc), "fields_set": list(fields.keys())},
+        )
+        raise
+    log_access(
+        actor, "ehr.write", "Patient", result.get("patient_id"),
+        patient_id=result.get("patient_id"),
+        details={
+            "operation": result.get("operation"),
+            "fields_set": list(fields.keys()),
+            "backend": (settings or load_settings()).ehr_backend,
+        },
+    )
+    return result
 
 
-def get_patient_clinical_context(patient_id: str, settings: Optional[Settings] = None) -> dict:
-    return get_backend(settings).get_patient_clinical_context(patient_id)
+def get_patient_clinical_context(
+    patient_id: str,
+    settings: Optional[Settings] = None,
+    *,
+    actor: str = "system",
+) -> dict:
+    from tools.audit import log_access
+    ctx = get_backend(settings).get_patient_clinical_context(patient_id)
+    log_access(
+        actor, "ehr.read", "Condition+Observation", patient_id,
+        patient_id=patient_id,
+        details={
+            "conditions_returned": len(ctx.get("conditions") or []),
+            "observations_returned": len(ctx.get("observations") or []),
+        },
+    )
+    return ctx
 
 
 def clear_backend_cache() -> None:
