@@ -37,7 +37,10 @@ def main() -> None:
         print("\n[1/3] EHR backend is fhir — assuming the server at "
               f"{settings.fhir_base_url} is already populated (skip).")
 
-    # 2. Appointments
+    # 2. Appointments — wipe + regenerate the full window at seed time.
+    # The runtime paths (app, eval) also call ensure_future_slots() to handle
+    # the "seeded weeks ago, all slots now in the past" case without losing
+    # existing bookings.
     print("\n[2/3] Pre-generating appointment slots ...")
     appt_result = initialize_appointments(settings.appointments_db_path)
     print(f"      {appt_result}")

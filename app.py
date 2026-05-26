@@ -68,7 +68,15 @@ def get_workflow():
 
 @st.cache_resource(show_spinner=False)
 def get_settings():
-    return load_settings()
+    s = load_settings()
+    # Top up the slot table on first launch so users don't hit "no available
+    # slots" when the appointments DB was seeded weeks ago.
+    from tools.appointments import ensure_future_slots
+    try:
+        ensure_future_slots(s.appointments_db_path)
+    except Exception:
+        logging.exception("ensure_future_slots failed at startup; continuing")
+    return s
 
 
 @st.cache_data(ttl=10, show_spinner=False)

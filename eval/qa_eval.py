@@ -242,9 +242,17 @@ def main() -> int:
         clear_backend_cache()
     # `fhir` (live server) is left alone — we don't mutate a real server.
 
+    # Top up the appointments slot table so the booking cases don't fail
+    # against a stale DB seeded weeks ago (every slot would be in the past).
+    # ensure_future_slots is idempotent and preserves existing bookings.
+    from tools.appointments import ensure_future_slots
+    slot_status = ensure_future_slots(settings.appointments_db_path)
+
     print("=" * 70)
     print(" QA Evaluation — Healthcare Assistant")
     print(f" LLM provider: {settings.llm_provider} ({settings.llm_model})")
+    print(f" EHR backend: {settings.ehr_backend}")
+    print(f" Slot freshness: {slot_status}")
     print(f" {len(GROUND_TRUTH)} ground-truth cases")
     print("=" * 70)
 

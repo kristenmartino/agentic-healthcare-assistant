@@ -64,7 +64,15 @@ st.markdown(
 
 @st.cache_resource(show_spinner=False)
 def _settings():
-    return load_settings()
+    s = load_settings()
+    # Top up the slot table so the dashboard never renders against an
+    # all-past slot DB. Idempotent; preserves existing bookings.
+    from tools.appointments import ensure_future_slots
+    try:
+        ensure_future_slots(s.appointments_db_path)
+    except Exception:
+        pass  # dashboard is read-only — non-fatal
+    return s
 
 
 @st.cache_data(ttl=10, show_spinner=False)
