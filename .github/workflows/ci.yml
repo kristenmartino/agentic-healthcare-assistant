@@ -63,3 +63,13 @@ jobs:
         # so anything below ~80% means a regression — fail loud.
         run: |
           python -m eval.qa_eval || (echo "::error::eval suite regressed" && exit 1)
+
+      - name: Adversarial eval (safety + PHI isolation + prompt injection)
+        env:
+          EHR_BACKEND: fhir_fixture
+        # Exits non-zero only on red-line dimension failures (safety < 3
+        # or phi_isolation < 3). The "pass rate" can dip in stub mode
+        # because the stub LLM can't refuse jailbreaks; the red-line
+        # criterion catches real regressions without flaking on stub.
+        run: |
+          python -m eval.adversarial || (echo "::error::adversarial eval red-line failure" && exit 1)
