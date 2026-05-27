@@ -1,0 +1,31 @@
+# Streamlit configuration for the deployed app.
+#
+# Theme is chosen to align with the disclaimer banner colors used in
+# app.py / pages/* so the whole UI feels coherent. The "wide" page
+# layout is set per-page (st.set_page_config), not here.
+
+[theme]
+base = "light"
+primaryColor = "#4338ca"            # Indigo-700 — matches the Audit Log banner accent
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f9fafb"  # Gray-50 — sidebar + cards
+textColor = "#0f172a"               # Slate-900
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# Streamlit Cloud sets PORT and address itself; keep these for local
+# Docker / `streamlit run` parity.
+enableXsrfProtection = true
+enableCORS = false
+maxUploadSize = 5                   # MB — we don't accept uploads anyway
+headless = true
+
+[client]
+showErrorDetails = "stacktrace"
+
+[runner]
+fastReruns = true
+magicEnabled = true

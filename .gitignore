@@ -30,6 +30,7 @@ venv/
 
 # Eval outputs (keep templates, not runs)
 eval/results_*.json
+eval/adversarial_results_*.json
 
 # Streamlit cache
 .streamlit/secrets.toml

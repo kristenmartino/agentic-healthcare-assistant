@@ -206,28 +206,67 @@ with col_main:
             from tools.medical_search import effective_backend
             from tools.tracing import trace_run
             try:
-                with trace_run(thread_id, user_input, actor="patient_chat") as trace_event, \
-                     st.status("Working...", expanded=True) as status:
-                    for chunk in workflow.stream(
-                        initial_state, config=config, stream_mode="updates"
-                    ):
-                        # chunk is {node_name: partial_state}
-                        for node_name, partial in chunk.items():
-                            label = node_label(node_name)
-                            summary = summarize_node_update(node_name, partial or {})
-                            st.write(f"✅ **{label}** — {summary}" if summary else f"✅ **{label}**")
-                            # Merge partial into accumulated for final render
-                            if isinstance(partial, dict):
-                                for k, v in partial.items():
-                                    if isinstance(v, list) and isinstance(accumulated.get(k), list):
-                                        accumulated[k] = accumulated[k] + v
-                                    else:
-                                        accumulated[k] = v
-                            status.update(label=f"Working — {label} done")
+                # Mixed stream: "updates" gives node-level progress for the
+                # status box, "messages" gives token-level chunks for the
+                # composer so the response area fills in as the LLM streams.
+                # The placeholder is opened OUTSIDE st.status so it renders
+                # in the main chat-message area; status closes when done.
+                streamed_response = ""
+                response_placeholder = st.empty()
+                with (
+                    trace_run(thread_id, user_input, actor="patient_chat") as trace_event,
+                    st.status("Working...", expanded=True) as status,
+                ):
+                    stream_iter = workflow.stream(
+                        initial_state,
+                        config=config,
+                        stream_mode=["updates", "messages"],
+                    )
+                    for stream_mode, chunk in stream_iter:
+                        if stream_mode == "updates":
+                            # chunk is {node_name: partial_state}
+                            for node_name, partial in chunk.items():
+                                label = node_label(node_name)
+                                summary = summarize_node_update(node_name, partial or {})
+                                status.write(
+                                    f"✅ **{label}** — {summary}"
+                                    if summary else f"✅ **{label}**"
+                                )
+                                if isinstance(partial, dict):
+                                    for k, v in partial.items():
+                                        if isinstance(v, list) and isinstance(
+                                                accumulated.get(k), list):
+                                            accumulated[k] = accumulated[k] + v
+                                        else:
+                                            accumulated[k] = v
+                                status.update(label=f"Working — {label} done")
+                        elif stream_mode == "messages":
+                            # chunk is (AIMessageChunk, metadata-dict). We only
+                            # stream tokens from the composer so the status panel
+                            # doesn't pollute the chat with intent-classifier tokens.
+                            try:
+                                token_msg, metadata = chunk
+                            except (TypeError, ValueError):
+                                continue
+                            if metadata.get("langgraph_node") != "compose_response":
+                                continue
+                            token = getattr(token_msg, "content", "") or ""
+                            if not isinstance(token, str):
+                                # Some providers return a list-of-content-blocks;
+                                # flatten the text-typed entries.
+                                token = "".join(
+                                    b.get("text", "") for b in token
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                            if token:
+                                streamed_response += token
+                                response_placeholder.markdown(streamed_response + "▌")
                     status.update(label="Done", state="complete", expanded=False)
 
-                response = accumulated.get("response", "(no response produced)")
-                st.markdown(response)
+                # Prefer the streamed text (no trailing cursor); fall back to
+                # the composer's final state if no tokens arrived (e.g., stub LLM).
+                response = streamed_response or accumulated.get("response", "(no response produced)")
+                response_placeholder.markdown(response)
                 st.session_state["chat_history"].append({"role": "assistant", "content": response})
                 st.session_state["last_state"] = accumulated
                 # Invalidate caches so dashboard updates
