@@ -38,7 +38,14 @@ def _ai_tool_call(tool_name: str, args: dict, call_id: str = "call-1"):
 
 
 class _ScriptedClient:
-    """A fake ChatAnthropic that returns pre-scripted responses in order."""
+    """A fake ChatAnthropic that returns pre-scripted responses in order.
+
+    Supports both .invoke() and .stream() so the agent_loop's new
+    streaming path can be unit-tested without a real LangChain client.
+    stream() yields the same response as a single chunk — tests don't
+    need per-token chunking to verify the accumulator + tool-loop
+    plumbing.
+    """
 
     def __init__(self, responses: list):
         self.responses = list(responses)
@@ -52,6 +59,15 @@ class _ScriptedClient:
         if not self.responses:
             raise RuntimeError("scripted client ran out of responses")
         return self.responses.pop(0)
+
+    def stream(self, messages):
+        # Yield the next scripted response as a single chunk. The
+        # agent_loop's _stream_and_accumulate handles the chunk-or-not
+        # case so this works whether we yield one chunk or many.
+        self.invocations.append(messages)
+        if not self.responses:
+            raise RuntimeError("scripted client ran out of responses")
+        yield self.responses.pop(0)
 
 
 @pytest.fixture(autouse=True)
@@ -89,6 +105,68 @@ def test_immediate_end_turn_returns_text():
     assert out["intents"] == ["general"]
     # One call made, no tool_log entries (we still write one summary entry).
     assert len(client.invocations) == 1
+
+
+def test_streaming_path_used_when_client_supports_it(monkeypatch):
+    """Fix #13: agent_loop must call client.stream() (not .invoke()) so
+    LangGraph's stream_mode='messages' can capture token deltas. This
+    test asserts the agent uses the streaming path when available."""
+    from nodes.agent_loop import agent_loop_node
+
+    captured = {"stream_called": 0, "invoke_called": 0}
+
+    class _StreamingSpy:
+        def bind_tools(self, _):
+            return self
+
+        def stream(self, _messages):
+            captured["stream_called"] += 1
+            yield _ai_text("Streamed response.")
+
+        def invoke(self, _messages):
+            captured["invoke_called"] += 1
+            return _ai_text("Invoked response.")
+
+    monkeypatch.setattr("nodes.agent_loop._get_client", lambda: _StreamingSpy())
+    out = agent_loop_node({"user_input": "hi"})
+    # stream() was used; invoke() never reached.
+    assert captured["stream_called"] == 1
+    assert captured["invoke_called"] == 0
+    assert "Streamed" in out["response"]
+
+
+def test_stream_accumulator_concatenates_multiple_chunks():
+    """Test the chunk accumulator directly with a multi-chunk stream
+    (simulating what LangChain actually yields in production)."""
+    from langchain_core.messages import AIMessageChunk
+
+    from nodes.agent_loop import _stream_and_accumulate
+
+    class _MultiChunkClient:
+        def stream(self, _messages):
+            yield AIMessageChunk(content="Hello ")
+            yield AIMessageChunk(content="world")
+            yield AIMessageChunk(content="!")
+
+    result = _stream_and_accumulate(_MultiChunkClient(), [])
+    # AIMessageChunk + AIMessageChunk concatenates content per LangChain's
+    # __add__ protocol — we should end up with the full message.
+    assert "Hello world!" in (result.content if isinstance(result.content, str)
+                              else "".join(b.get("text", "") for b in result.content))
+
+
+def test_stream_accumulator_falls_back_to_invoke_when_no_stream():
+    """Defensive: if a future client only implements .invoke(), the
+    accumulator should still work."""
+    from nodes.agent_loop import _stream_and_accumulate
+
+    class _InvokeOnly:
+        def invoke(self, _messages):
+            from langchain_core.messages import AIMessage
+            return AIMessage(content="fallback")
+
+    result = _stream_and_accumulate(_InvokeOnly(), [])
+    assert result.content == "fallback"
 
 
 # ---------- single tool call → tool result → end_turn ----------

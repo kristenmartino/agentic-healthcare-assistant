@@ -124,6 +124,26 @@ _MAX_TURNS = 6
 _HISTORY_TURN_CAP = 8
 
 
+def _stream_and_accumulate(client: Any, messages: list) -> Any:
+    """Run client.stream(messages) and concatenate chunks into one
+    final message. Falls back to client.invoke() if the client doesn't
+    support streaming (e.g. a test stub).
+
+    LangGraph's stream_mode='messages' captures the per-chunk events
+    emitted by `.stream()` and forwards them to any SSE consumer that
+    subscribed at the workflow boundary. The accumulator preserves the
+    same final AIMessage shape `.invoke()` returns so the rest of the
+    loop (tool_calls extraction, content flattening) is unchanged.
+    """
+    stream_fn = getattr(client, "stream", None)
+    if not callable(stream_fn):
+        return client.invoke(messages)
+    accumulated = None
+    for chunk in stream_fn(messages):
+        accumulated = chunk if accumulated is None else accumulated + chunk
+    return accumulated if accumulated is not None else client.invoke(messages)
+
+
 def _accumulate_state(
     artifacts: dict, tool_name: str, tool_args: dict, tool_result: Any,
 ) -> None:
@@ -296,7 +316,18 @@ def agent_loop_node(state: HealthcareState) -> dict:
 
     for turn in range(_MAX_TURNS):
         try:
-            response = client.invoke(messages)
+            # Use .stream() rather than .invoke() so LangGraph's
+            # stream_mode='messages' instrumentation captures the
+            # token deltas as they're emitted (rather than seeing the
+            # whole AIMessage in one shot at the end of .invoke()).
+            # We accumulate the chunks into a final AIMessage with the
+            # same shape .invoke() would have returned — tool_calls
+            # attribute, content (str or list of blocks), etc.
+            # Tool-use turns stream the brief "I'll look that up"
+            # preamble Claude often emits before tool calls; the SSE
+            # filter in api/main.py turns those text deltas into
+            # tokens in the chat bubble, matching graph mode's UX.
+            response = _stream_and_accumulate(client, messages)
         except Exception as exc:
             logger.exception("agent_loop LLM call failed on turn %d", turn)
             return {
