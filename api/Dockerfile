@@ -6,7 +6,7 @@
 #
 # Build:    docker build -f api/Dockerfile -t healthcare-api .
 # Run:      docker run -p 8000:8000 --env-file .env healthcare-api
-# Fly.io:   flyctl deploy --config api/fly.toml --dockerfile api/Dockerfile
+# Fly.io:   flyctl deploy   (uses fly.toml at the repo root)
 
 FROM python:3.11-slim AS builder
 
@@ -23,9 +23,12 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy and install only the requirements first so source changes don't
-# invalidate the dep layer.
-COPY requirements.txt api/requirements.txt /build/
+# Copy the two requirements files into their respective paths.
+# NB: `COPY a b /dest/` flattens — both files would land at /dest/ with the
+# second clobbering the first. Use separate COPY instructions to preserve
+# the api/ subdirectory.
+COPY requirements.txt /build/requirements.txt
+COPY api/requirements.txt /build/api/requirements.txt
 RUN pip install --upgrade pip setuptools wheel && \
     pip install -r requirements.txt -r api/requirements.txt && \
     pip install --no-deps fastapi "uvicorn[standard]"
