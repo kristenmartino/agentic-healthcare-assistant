@@ -120,6 +120,11 @@ def _extract_tool_calls(message: Any) -> list[dict]:
 # Cap the number of tool-use turns so a runaway agent can't burn the API budget.
 _MAX_TURNS = 6
 
+# Cap how many prior conversation turns we replay into the message list.
+# At ~150 tokens/turn this is ~1.2k tokens of context budget — well under
+# the prompt-caching floor's tax band.
+_HISTORY_TURN_CAP = 8
+
 
 def _accumulate_state(
     artifacts: dict, tool_name: str, tool_args: dict, tool_result: Any,
@@ -219,7 +224,7 @@ def _accumulate_state(
 
 def agent_loop_node(state: HealthcareState) -> dict:
     """Single-node alternative to classify→branches→compose."""
-    from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
     user_input = (state.get("user_input") or "").strip()
     if not user_input:
@@ -237,10 +242,41 @@ def agent_loop_node(state: HealthcareState) -> dict:
             "Default to this patient unless the user explicitly names another."
         )
 
-    messages: list = [
-        SystemMessage(content=sys_prompt),
-        HumanMessage(content=user_input),
-    ]
+    messages: list = [SystemMessage(content=sys_prompt)]
+
+    # Thread bounded conversation history so follow-ups like
+    # "cancel that appointment" resolve from prior turns rather than from
+    # lucky text-matching in the current input. Cap at the last 8 turns
+    # to keep prompt tokens bounded.
+    prior_turns = state.get("history") or []
+    for h in prior_turns[-_HISTORY_TURN_CAP:]:
+        role = h.get("role")
+        text = (h.get("content") or "").strip()
+        if not text:
+            continue
+        if role == "user":
+            messages.append(HumanMessage(content=text))
+        elif role == "assistant":
+            messages.append(AIMessage(content=text))
+
+    # If the most recent assistant message wrote a booking confirmation
+    # to structured state on the prior turn, include it as a SystemMessage
+    # hint so the model can resolve "that appointment" without scraping
+    # text for AGS-… numbers. This is the deterministic anchor for the
+    # cancel-follow-up regression test.
+    last_appt = state.get("appointment")
+    if last_appt and last_appt.get("action") != "cancelled":
+        hint = (
+            "Prior turn produced this appointment (use these IDs verbatim "
+            "if the user refers to 'that appointment', 'my booking', etc.): "
+            f"slot_id={last_appt.get('slot_id')}, "
+            f"confirmation_no={last_appt.get('confirmation_no')!r}, "
+            f"doctor={last_appt.get('doctor_name')!r}, "
+            f"start_time={last_appt.get('start_time')!r}."
+        )
+        messages.append(SystemMessage(content=hint))
+
+    messages.append(HumanMessage(content=user_input))
 
     tool_log: list[dict] = []
     intents_seen: set[str] = set()

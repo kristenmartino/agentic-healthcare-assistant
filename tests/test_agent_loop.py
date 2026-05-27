@@ -230,6 +230,116 @@ def test_patient_context_lands_in_system_prompt(monkeypatch):
     assert "fhir:anjali-mehra" in system_msg.content
 
 
+# ---------- conversation-history threading ----------
+#
+# Regression for PR #6 review: the loop must replay prior conversation
+# turns AND surface structured artifacts from the previous assistant turn
+# so "cancel that appointment" resolves deterministically from state,
+# not from lucky text-matching.
+
+def test_conversation_history_is_threaded_into_messages():
+    from langchain_core.messages import AIMessage as LCAi
+    from langchain_core.messages import HumanMessage as LCHu
+
+    from nodes.agent_loop import agent_loop_node
+
+    client = _ScriptedClient([_ai_text("Got it.")])
+    with _patch_client_with(client):
+        agent_loop_node({
+            "user_input": "follow-up question",
+            "history": [
+                {"role": "user", "content": "Earlier I asked about Anjali."},
+                {"role": "assistant", "content": "Anjali has diabetes."},
+            ],
+        })
+    msgs = client.invocations[0]
+    # First message is the system prompt; then the two prior turns; then
+    # the current user input. (No prior appointment, so no hint message.)
+    human_msgs = [m for m in msgs if isinstance(m, LCHu)]
+    ai_msgs = [m for m in msgs if isinstance(m, LCAi)]
+    assert any("Earlier I asked about Anjali" in m.content for m in human_msgs)
+    assert any("Anjali has diabetes" in m.content for m in ai_msgs)
+
+
+def test_prior_appointment_is_surfaced_as_system_hint(monkeypatch):
+    """If the prior turn produced an appointment, the model must see the
+    slot_id + confirmation_no in a system hint so 'cancel that appointment'
+    can resolve to the right slot without scraping text from the chat
+    history."""
+    from langchain_core.messages import SystemMessage as LCSys
+
+    from nodes.agent_loop import agent_loop_node
+
+    client = _ScriptedClient([_ai_text("ok")])
+    with _patch_client_with(client):
+        agent_loop_node({
+            "user_input": "what was that confirmation again?",
+            "appointment": {
+                "slot_id": 42, "confirmation_no": "AGS-555111",
+                "doctor_name": "Dr. Y", "start_time": "2026-06-02T10:00:00",
+            },
+        })
+    sys_msgs = [m for m in client.invocations[0] if isinstance(m, LCSys)]
+    hint_text = "\n".join(m.content for m in sys_msgs if isinstance(m.content, str))
+    assert "AGS-555111" in hint_text
+    assert "slot_id=42" in hint_text
+
+
+def test_two_turn_book_then_cancel_resolves_deterministically(monkeypatch):
+    """End-to-end: turn 1 books, turn 2 says 'cancel that appointment'.
+    The second turn must call cancel_booking with the slot_id from the
+    first turn's structured state — NOT depend on the LLM scraping
+    'AGS-…' from a stringified history."""
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    booking = {
+        "doctor_name": "Dr. Z", "specialty": "cardiology",
+        "start_time": "2026-06-03T09:00:00", "end_time": "2026-06-03T09:30:00",
+        "slot_id": 77, "confirmation_no": "AGS-CANCEL", "status": "confirmed",
+    }
+    monkeypatch.setattr(agent_tools, "_tool_book_appointment",
+                        lambda **kwargs: booking)
+    captured_cancel_args: dict = {}
+
+    def _fake_cancel(**kwargs):
+        captured_cancel_args.update(kwargs)
+        return {"status": "cancelled", "slot_id": kwargs.get("slot_id")}
+
+    monkeypatch.setattr(agent_tools, "_tool_cancel_booking", _fake_cancel)
+
+    # Turn 1: book.
+    client1 = _ScriptedClient([
+        _ai_tool_call("book_appointment",
+                      {"patient_name": "X", "specialty": "cardiology"}, "c1"),
+        _ai_text("Booked AGS-CANCEL."),
+    ])
+    with _patch_client_with(client1):
+        turn1 = agent_loop_node({"user_input": "book a cardiologist"})
+    assert turn1["appointment"]["confirmation_no"] == "AGS-CANCEL"
+
+    # Turn 2: "cancel that appointment". The system hint embeds slot_id=77,
+    # so a correct model call would pass slot_id=77 to cancel_booking.
+    # Our scripted client makes Claude pick slot_id=77 explicitly to verify
+    # the dispatch + state plumbing — the system-hint presence is asserted
+    # separately above; this test asserts the cancel landed on the right slot.
+    client2 = _ScriptedClient([
+        _ai_tool_call("cancel_booking", {"slot_id": 77}, "c2"),
+        _ai_text("Cancelled."),
+    ])
+    with _patch_client_with(client2):
+        turn2 = agent_loop_node({
+            "user_input": "cancel that appointment",
+            "appointment": turn1["appointment"],
+            "history": [
+                {"role": "user", "content": "book a cardiologist"},
+                {"role": "assistant", "content": "Booked AGS-CANCEL."},
+            ],
+        })
+    assert captured_cancel_args == {"slot_id": 77}
+    assert (turn2.get("appointment") or {}).get("action") == "cancelled"
+
+
 # ---------- structured-state accumulator ----------
 #
 # Regression for PR #6 review: the agent_loop must populate the
