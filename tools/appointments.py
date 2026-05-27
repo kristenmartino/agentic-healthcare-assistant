@@ -228,12 +228,22 @@ def book_appointment(
     Raises ValueError if no slot is available.
     """
     with _connect(db_path) as conn:
+        # Always exclude slots in the past — without the lower bound an
+        # agent that asks for the next nephrology slot can land on
+        # yesterday's 4pm if the seed is older than the booking call.
+        #
+        # NB: wrap both sides in datetime() because SQLite's `datetime('now')`
+        # uses a space separator ('2026-05-27 15:45:06') while .isoformat()
+        # uses 'T' ('2026-05-27T15:45:06'). A naïve string `>=` would treat
+        # the T-form as greater than the space-form at every common prefix,
+        # silently letting past slots through.
         query = """
             SELECT s.slot_id, s.doctor_id, d.name AS doctor_name, s.start_time, s.end_time
               FROM slots s
               JOIN doctors d ON d.doctor_id = s.doctor_id
              WHERE s.booked = 0
                AND d.specialty = ?
+               AND datetime(s.start_time) >= datetime('now')
         """
         params: list = [specialty]
 
@@ -300,7 +310,8 @@ def list_all_bookings(db_path: str, *, upcoming_only: bool = False) -> list[dict
     """All bookings, optionally filtered to future appointments only."""
     where = "WHERE s.booked = 1"
     if upcoming_only:
-        where += " AND s.start_time >= datetime('now')"
+        # See book_appointment for why we wrap in datetime() (ISO-T vs space).
+        where += " AND datetime(s.start_time) >= datetime('now')"
     with _connect(db_path) as conn:
         rows = conn.execute(
             f"""
@@ -317,14 +328,22 @@ def list_all_bookings(db_path: str, *, upcoming_only: bool = False) -> list[dict
 
 
 def get_doctor_schedule(db_path: str, doctor_id: str, *, days_ahead: int = 7) -> list[dict]:
-    """Return all slots (booked + open) for a specific doctor."""
+    """Return UPCOMING slots (booked + open) for a specific doctor.
+
+    Filters out slots in the past — schedule queries are forward-looking;
+    showing yesterday's 9am as "on the calendar" is wrong and (worse)
+    leaks the prior booker's identifiers on a past appointment.
+    """
     with _connect(db_path) as conn:
+        # See note in book_appointment about the datetime() wrap — same
+        # ISO-T-vs-space mismatch applies here.
         rows = conn.execute(
             """
             SELECT s.slot_id, s.start_time, s.end_time, s.booked,
                    s.booked_by_patient_id, s.confirmation_no
               FROM slots s
              WHERE s.doctor_id = ?
+               AND datetime(s.start_time) >= datetime('now')
                AND date(s.start_time) <= date('now', ? || ' days')
              ORDER BY s.start_time ASC
             """,
