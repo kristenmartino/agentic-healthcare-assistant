@@ -1,0 +1,10 @@
+# FastAPI service-specific deps. Pip-install both root requirements.txt
+# (for the LangGraph workflow + tools) AND this file (for the HTTP layer)
+# when deploying the API:
+#     pip install -r requirements.txt -r api/requirements.txt
+#
+# Streamlit is intentionally NOT pulled here — the API is headless.
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.5.0   # already in root requirements.txt, kept for clarity
