@@ -146,16 +146,51 @@ def _tool_list_patients() -> list[dict]:
 
 
 def _tool_get_patient_history(patient_name: str) -> dict:
-    """Returns the structured record + FHIR Conditions + recent Observations."""
+    """Returns the structured record + FHIR Conditions + recent Observations
+    PLUS an LLM-synthesized prose summary that cites the report PDFs via the
+    FAISS index.
+
+    Delegates the synthesis step to the legacy `history_node` so the react
+    path produces the same shape of summary as the classifier-graph path.
+    Behavioral parity matters — the Streamlit history panel and the FastAPI
+    `done` payload both expect `history_summary` to be a clinician-style
+    paragraph, not a JSON dump.
+    """
     from config import load_settings
+    from nodes.history import history_node
     from tools.ehr import find_patient_by_name, get_patient_clinical_context
+
     s = load_settings()
     record = find_patient_by_name(patient_name, s, actor="agent")
     if not record:
         return {"error": f"No patient matching '{patient_name}'"}
     clinical = get_patient_clinical_context(record["patient_id"], s, actor="agent")
-    return {"record": record, "conditions": clinical.get("conditions", []),
-            "observations": clinical.get("observations", [])}
+
+    # Delegate to the legacy node for FAISS + LLM-synthesized summary.
+    # The node already audits patient access; we tag the actor through state.
+    legacy_state = {
+        "user_input": f"history for {patient_name}",
+        "patient_name": patient_name,
+    }
+    try:
+        legacy_out = history_node(legacy_state)
+    except Exception as exc:
+        logger.warning("history_node delegation failed: %s", exc)
+        legacy_out = {}
+
+    chunks_retrieved = 0
+    for entry in (legacy_out.get("tool_log") or []):
+        if entry.get("node") == "history":
+            chunks_retrieved = entry.get("pdf_chunks_retrieved", 0) or 0
+            break
+
+    return {
+        "record": record,
+        "conditions": clinical.get("conditions", []),
+        "observations": clinical.get("observations", []),
+        "history_summary": legacy_out.get("history_summary"),
+        "pdf_chunks_retrieved": chunks_retrieved,
+    }
 
 
 def _tool_upsert_patient(name: str, age: int | None = None,
@@ -171,16 +206,56 @@ def _tool_upsert_patient(name: str, age: int | None = None,
     }, load_settings(), actor="agent")
 
 
-def _tool_medical_search(query: str, top_k: int = 4) -> list[dict]:
-    """Search trusted medical sources (MedlinePlus, WHO, CDC, NIH, Mayo)."""
-    from config import load_settings
-    from tools.audit import log_access
-    from tools.medical_search import medical_search
-    s = load_settings()
-    results = medical_search(query, top_k=top_k, tavily_api_key=s.tavily_api_key)
-    log_access("agent", "medical_search.query", "WebSearch", None,
-               details={"query": query, "results": len(results)})
-    return results
+def _tool_medical_search(query: str, top_k: int = 4) -> dict:
+    """Search trusted medical sources (MedlinePlus, WHO, CDC, NIH, Mayo).
+
+    Delegates to the legacy `medical_search_node` so the react path produces
+    the same shape the classifier-graph path produces: a cited LLM
+    synthesis prepended to the raw results, and a `sources` list with
+    indexed [{title, url, source}]. Without this delegation the UI's
+    'Sources' panel and the eval's medical_info shape would diverge from
+    graph mode.
+
+    Returns a dict (not a bare list) so the agent_loop accumulator can
+    pull synthesis + raw results + sources separately into state.
+    """
+    from nodes.medical_search_node import medical_search_node
+
+    # The legacy node reads state["user_input"] and builds the search query
+    # from it; for react mode we pass the focused query Claude gave us as
+    # the user_input. (T12's sub-query extraction lives in that node and
+    # is a no-op when there's only one intent, which is our case here.)
+    legacy_state = {
+        "user_input": query,
+        "intents": ["medical_search"],
+    }
+    try:
+        legacy_out = medical_search_node(legacy_state)
+    except Exception as exc:
+        logger.warning("medical_search_node delegation failed: %s", exc)
+        # Fall back to raw search so the tool isn't unusable.
+        from config import load_settings
+        from tools.medical_search import medical_search
+        s = load_settings()
+        raw = medical_search(query, top_k=top_k, tavily_api_key=s.tavily_api_key)
+        return {"medical_info": raw, "sources": [], "synthesis": None,
+                "results_count": len(raw), "raw_results": raw}
+
+    medical_info = legacy_out.get("medical_info") or []
+    # Pull the synthesis pseudo-entry out so Claude can read it directly,
+    # and keep the raw results separate for downstream UI panels.
+    synthesis = next(
+        (e.get("synthesis") for e in medical_info if isinstance(e, dict)
+         and "synthesis" in e), None)
+    raw_results = [e for e in medical_info if isinstance(e, dict)
+                   and "synthesis" not in e]
+    return {
+        "medical_info": medical_info,         # full [synth + raw] for state
+        "sources": legacy_out.get("sources") or [],
+        "synthesis": synthesis,                # convenience for the LLM
+        "raw_results": raw_results,            # convenience for the LLM
+        "results_count": len(raw_results),
+    }
 
 
 def _tool_get_audit_log(patient_id: str | None = None,

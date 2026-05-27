@@ -166,45 +166,46 @@ def _accumulate_state(
             artifacts["patient_name"] = tool_result["name"]
 
     elif tool_name == "get_patient_history" and isinstance(tool_result, dict):
-        # Build a compact text history_summary from the structured result.
-        # This is the naive version — fix #7 will swap in the legacy
-        # history_node's FAISS+LLM synthesis for proper parity.
-        rec = tool_result.get("record") or {}
-        conds = tool_result.get("conditions") or []
-        obs = tool_result.get("observations") or []
-        parts: list[str] = []
-        if rec.get("name"):
-            parts.append(f"**{rec['name']}**" + (
-                f" — {rec.get('age')} {rec.get('gender', '')}" if rec.get("age") else ""
-            ))
-        if rec.get("summary"):
-            parts.append(rec["summary"])
-        if conds:
-            from tools.fhir_client import condition_summary
-            cond_text = condition_summary(conds)
-            if cond_text:
-                parts.append(f"Active conditions: {cond_text}")
-        if obs:
-            obs_lines = [
-                f"{o.get('name')}: {o.get('value')} {o.get('unit') or ''}".strip()
-                for o in obs[:4]
-            ]
-            parts.append("Recent observations — " + "; ".join(obs_lines))
-        if parts:
-            artifacts["history_summary"] = "\n".join(parts)
+        # Preferred path (fix #7): legacy history_node was delegated, so we
+        # already have a clinician-style synthesis that cites the report
+        # PDFs via FAISS. Use it verbatim. Fall back to a synthesized
+        # blurb if delegation failed.
+        if tool_result.get("history_summary"):
+            artifacts["history_summary"] = tool_result["history_summary"]
+        else:
+            rec = tool_result.get("record") or {}
+            conds = tool_result.get("conditions") or []
+            obs = tool_result.get("observations") or []
+            parts: list[str] = []
+            if rec.get("name"):
+                parts.append(f"**{rec['name']}**" + (
+                    f" — {rec.get('age')} {rec.get('gender', '')}" if rec.get("age") else ""
+                ))
+            if rec.get("summary"):
+                parts.append(rec["summary"])
+            if conds:
+                from tools.fhir_client import condition_summary
+                cond_text = condition_summary(conds)
+                if cond_text:
+                    parts.append(f"Active conditions: {cond_text}")
+            if obs:
+                obs_lines = [
+                    f"{o.get('name')}: {o.get('value')} {o.get('unit') or ''}".strip()
+                    for o in obs[:4]
+                ]
+                parts.append("Recent observations — " + "; ".join(obs_lines))
+            if parts:
+                artifacts["history_summary"] = "\n".join(parts)
 
-    elif tool_name == "medical_search" and isinstance(tool_result, list):
-        # Match the legacy medical_search_node shape:
-        #   medical_info = [{"synthesis": ...}] + raw_results
-        #   sources      = [{"index": i, "title", "url", "source"}, ...]
-        # We don't synthesize here — fix #7 will route this through the
-        # legacy node so we get the same cited synthesis as graph mode.
-        artifacts["medical_info"] = list(tool_result)
-        artifacts["sources"] = [
-            {"index": i + 1, "title": r.get("title", ""),
-             "url": r.get("url", ""), "source": r.get("source", "unknown")}
-            for i, r in enumerate(tool_result)
-        ]
+    elif tool_name == "medical_search" and isinstance(tool_result, dict):
+        # Fix #7: tool now delegates to medical_search_node, so we get
+        # cited synthesis + indexed sources in the same shape graph mode
+        # produces. medical_info[0] is the synthesis pseudo-entry; rest
+        # are raw results.
+        if tool_result.get("medical_info"):
+            artifacts["medical_info"] = tool_result["medical_info"]
+        if tool_result.get("sources"):
+            artifacts["sources"] = tool_result["sources"]
 
     elif tool_name == "get_doctor_schedule" and isinstance(tool_result, dict):
         artifacts["schedule_results"] = tool_result

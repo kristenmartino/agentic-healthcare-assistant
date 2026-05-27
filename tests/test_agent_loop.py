@@ -230,6 +230,91 @@ def test_patient_context_lands_in_system_prompt(monkeypatch):
     assert "fhir:anjali-mehra" in system_msg.content
 
 
+# ---------- tool delegation to legacy nodes (fix #7) ----------
+#
+# Behavioral parity: history + medical_search tools must produce the
+# same shape of structured artifact the legacy graph nodes produce
+# (clinician-style summary with FAISS citations for history; cited
+# synthesis + indexed sources for medical_search). Easiest path is to
+# have the tool wrapper invoke the legacy node directly.
+
+def test_get_patient_history_delegates_to_history_node(monkeypatch):
+    """The tool must call history_node so the resulting history_summary
+    is the legacy clinician synthesis, not a raw JSON dump."""
+    from nodes import agent_tools, history
+    from tools import ehr
+
+    # Stub the EHR lookups (local imports inside the tool function will
+    # pick these up because the imports re-resolve from the module).
+    monkeypatch.setattr(ehr, "find_patient_by_name", lambda name, settings=None,
+                        actor=None: {"patient_id": "fhir:test", "name": name})
+    monkeypatch.setattr(ehr, "get_patient_clinical_context",
+                        lambda pid, settings=None, actor=None:
+                            {"conditions": [], "observations": []})
+
+    called = {"n": 0}
+
+    def _fake_history_node(state):
+        called["n"] += 1
+        assert state.get("patient_name") == "Anjali Mehra"
+        return {
+            "history_summary": "DELEGATED SYNTHESIS from legacy node",
+            "tool_log": [{"node": "history", "pdf_chunks_retrieved": 3}],
+        }
+
+    monkeypatch.setattr(history, "history_node", _fake_history_node)
+
+    result = agent_tools._tool_get_patient_history("Anjali Mehra")
+    assert called["n"] == 1, "legacy history_node was not invoked"
+    assert result["history_summary"] == "DELEGATED SYNTHESIS from legacy node"
+    assert result["pdf_chunks_retrieved"] == 3
+
+
+def test_medical_search_delegates_to_medical_search_node(monkeypatch):
+    """The tool must return a dict shape (not a bare list) with
+    synthesis + sources + raw_results, matching legacy graph mode."""
+    from nodes import agent_tools, medical_search_node
+
+    def _fake_node(state):
+        return {
+            "medical_info": [
+                {"synthesis": "Test synthesis citing [1]."},
+                {"title": "Source One", "url": "https://x", "snippet": "...",
+                 "source": "tavily"},
+            ],
+            "sources": [{"index": 1, "title": "Source One",
+                         "url": "https://x", "source": "tavily"}],
+        }
+
+    monkeypatch.setattr(medical_search_node, "medical_search_node", _fake_node)
+    result = agent_tools._tool_medical_search("pneumonia symptoms")
+    assert isinstance(result, dict), "tool should return dict, not list"
+    assert result.get("synthesis") == "Test synthesis citing [1]."
+    assert len(result.get("sources") or []) == 1
+    # raw_results split out for the LLM's convenience
+    assert len(result.get("raw_results") or []) == 1
+
+
+def test_medical_search_falls_back_when_legacy_node_raises(monkeypatch):
+    """If the legacy node blows up, the tool must still return SOMETHING
+    so the agent loop doesn't lose the search step entirely."""
+    from nodes import agent_tools, medical_search_node
+
+    def _broken(_state):
+        raise RuntimeError("FAISS index missing")
+
+    monkeypatch.setattr(medical_search_node, "medical_search_node", _broken)
+    monkeypatch.setattr(
+        "tools.medical_search.medical_search",
+        lambda *args, **kwargs: [{"title": "fallback", "snippet": "",
+                                   "url": "", "source": "stub"}],
+    )
+    result = agent_tools._tool_medical_search("anything")
+    assert isinstance(result, dict)
+    assert result.get("results_count") == 1
+    # Synthesis may be None; that's OK as long as the shape is preserved.
+
+
 # ---------- conversation-history threading ----------
 #
 # Regression for PR #6 review: the loop must replay prior conversation
@@ -433,27 +518,44 @@ def test_get_patient_history_populates_history_summary(monkeypatch):
 
 
 def test_medical_search_populates_medical_info_and_sources(monkeypatch):
+    """Fix #7: tool now delegates to medical_search_node, so the shape is
+    a dict with medical_info + sources + synthesis. Verify the accumulator
+    pulls those directly into state (no re-indexing in the accumulator)."""
     from nodes import agent_tools
     from nodes.agent_loop import agent_loop_node
 
-    fake_results = [
+    raw_results = [
         {"title": "Pneumonia symptoms", "snippet": "Cough, fever…",
          "url": "https://medlineplus.gov/x", "source": "tavily"},
         {"title": "WHO on pneumonia", "snippet": "…",
          "url": "https://who.int/y", "source": "tavily"},
     ]
-    monkeypatch.setattr(agent_tools, "_tool_medical_search",
-                        lambda **kwargs: fake_results)
+    medical_info_with_synthesis = [
+        {"synthesis": "Pneumonia usually presents with cough, fever, "
+                       "shortness of breath [1][2]."}
+    ] + raw_results
+    sources = [
+        {"index": 1, "title": "Pneumonia symptoms",
+         "url": "https://medlineplus.gov/x", "source": "tavily"},
+        {"index": 2, "title": "WHO on pneumonia",
+         "url": "https://who.int/y", "source": "tavily"},
+    ]
+    monkeypatch.setattr(agent_tools, "_tool_medical_search", lambda **kwargs: {
+        "medical_info": medical_info_with_synthesis,
+        "sources": sources,
+        "synthesis": medical_info_with_synthesis[0]["synthesis"],
+        "raw_results": raw_results,
+        "results_count": 2,
+    })
     client = _ScriptedClient([
         _ai_tool_call("medical_search", {"query": "pneumonia symptoms"}, "c1"),
         _ai_text("Pneumonia commonly presents with…"),
     ])
     with _patch_client_with(client):
         out = agent_loop_node({"user_input": "symptoms of pneumonia"})
-    assert out.get("medical_info") == fake_results
-    sources = out.get("sources") or []
-    assert len(sources) == 2
-    assert sources[0]["index"] == 1
+    # State carries the synthesized [synth + raw] shape graph mode uses.
+    assert out.get("medical_info") == medical_info_with_synthesis
+    assert out.get("sources") == sources
     assert "medlineplus" in sources[0]["url"]
 
 
