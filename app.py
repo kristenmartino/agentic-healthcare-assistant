@@ -95,13 +95,23 @@ settings = get_settings()
 workflow = get_workflow()
 
 with st.sidebar:
+    from tools.medical_search import configured_backend
+    _search_backend = configured_backend(settings.tavily_api_key)
+
     st.header("🏥 Healthcare Assistant")
     st.caption(f"LLM: **{settings.llm_provider}** ({settings.llm_model})")
     st.caption(f"EHR backend: **{settings.ehr_backend}**")
+    st.caption(f"Search: **{_search_backend}**")
     if settings.llm_provider == "stub":
         st.warning(
             "Running in **stub mode** — LLM responses are templated. "
             "Set `GROQ_API_KEY` (free) or `OPENAI_API_KEY` in `.env` for real responses."
+        )
+    if _search_backend == "duckduckgo":
+        st.caption(
+            "💡 *DuckDuckGo is rate-limited on some networks. For consistent "
+            "cited medical sources, set `TAVILY_API_KEY` (free tier at tavily.com) "
+            "in `.env`.*"
         )
 
     st.divider()
@@ -193,8 +203,11 @@ with col_main:
 
             config = {"configurable": {"thread_id": thread_id}}
             accumulated: dict = {}
+            from tools.medical_search import effective_backend
+            from tools.tracing import trace_run
             try:
-                with st.status("Working...", expanded=True) as status:
+                with trace_run(thread_id, user_input, actor="patient_chat") as trace_event, \
+                     st.status("Working...", expanded=True) as status:
                     for chunk in workflow.stream(
                         initial_state, config=config, stream_mode="updates"
                     ):
@@ -220,6 +233,21 @@ with col_main:
                 # Invalidate caches so dashboard updates
                 get_patients.clear()
                 get_recent_bookings.clear()
+
+                # Annotate the trace event with state-derived fields. trace_run
+                # writes one row when the `with` block exits.
+                _raw_info = [r for r in (accumulated.get("medical_info") or [])
+                             if "synthesis" not in r]
+                trace_event.update({
+                    "intents": accumulated.get("intents"),
+                    "is_emergency": accumulated.get("is_emergency", False),
+                    "emergency_categories": accumulated.get("emergency_categories"),
+                    "patient_id": accumulated.get("patient_id"),
+                    "ehr_backend": settings.ehr_backend,
+                    "search_backend": effective_backend(_raw_info) if _raw_info else None,
+                    "node_count": len(accumulated.get("tool_log") or []),
+                    "had_error": bool(accumulated.get("error")),
+                })
             except Exception as exc:
                 st.error(f"Workflow error: {exc}")
                 logging.exception("Workflow invocation failed")
@@ -275,6 +303,20 @@ with col_side:
 
         info = last_state.get("medical_info") or []
         if info:
+            # Show which backend actually produced these results so the
+            # reviewer can tell a real MedlinePlus/Tavily citation from a
+            # stub fallback at a glance.
+            from tools.medical_search import effective_backend
+            raw = [r for r in info if "synthesis" not in r]
+            actual_backend = effective_backend(raw) if raw else "unknown"
+            if actual_backend == "stub":
+                st.warning(
+                    "⚠️ Medical search ran on the **stub backend** "
+                    "(real search returned no results). Responses fall back "
+                    "to the LLM's pretrained knowledge — no live citations."
+                )
+            else:
+                st.caption(f"Search backend used: **{actual_backend}**")
             with st.expander(f"Medical search results ({len(info)} entries)", expanded=False):
                 for item in info:
                     if "synthesis" in item:
@@ -317,6 +359,8 @@ with col_side:
             "llm_provider": settings.llm_provider,
             "llm_model": settings.llm_model,
             "ehr_backend": settings.ehr_backend,
+            "search_backend_intended": _search_backend,
+            "tavily_configured": bool(settings.tavily_api_key),
             "fhir_base_url": settings.fhir_base_url if settings.ehr_backend == "fhir" else None,
             "enable_persistence": settings.enable_persistence,
             "enable_parallel_fanout": settings.enable_parallel_fanout,

@@ -27,6 +27,7 @@ select = [
 ignore = [
     "E501",   # line length is enforced by formatter when used
     "B008",   # FastAPI / Streamlit patterns sometimes need function-call defaults
+    "B905",   # zip(strict=...) is 3.10+; some users still run on 3.9
 ]
 
 [tool.ruff.lint.per-file-ignores]

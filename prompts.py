@@ -79,6 +79,35 @@ Use plain language. Do not invent facts. If a field is missing, say so explicitl
 """
 
 
+SEARCH_QUERY_EXTRACTOR_PROMPT = """You extract focused search queries from \
+multi-intent user messages.
+
+A user message may bundle several requests, e.g. booking AND a question about
+a condition. We only want the search-relevant portion for the web query —
+booking instructions ("book me a nephrologist", "for him") confuse a site-
+restricted MedlinePlus/WHO search and return zero results.
+
+Given a user message, output ONE concise search query (3-12 words) that
+captures the medical topic to look up. No booking phrases, no patient
+relationship phrases, no first-person framing.
+
+Examples:
+"My 70-year-old father has chronic kidney disease. Book a nephrologist for him and summarize the latest treatment methods."
+  → latest treatment for chronic kidney disease
+
+"What are the symptoms of pneumonia?"
+  → symptoms of pneumonia
+
+"Book a cardiologist next week — also, what is afib?"
+  → what is atrial fibrillation
+
+"My mom has Parkinson's. Schedule a neurologist and tell me about new therapies."
+  → new therapies for Parkinson's disease
+
+Output only the query string, no quotes, no other text.
+"""
+
+
 MEDICAL_SEARCH_PROMPT = """You are a medical information assistant.
 
 You will be given:
