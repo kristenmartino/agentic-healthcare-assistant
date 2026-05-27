@@ -230,16 +230,229 @@ def test_patient_context_lands_in_system_prompt(monkeypatch):
     assert "fhir:anjali-mehra" in system_msg.content
 
 
+# ---------- structured-state accumulator ----------
+#
+# Regression for PR #6 review: the agent_loop must populate the
+# HealthcareState fields (appointment, record_change, history_summary,
+# medical_info, sources, plus new agent-only fields) — not just response
+# text. The Streamlit panel, FastAPI /chat done payload, the deterministic
+# eval, and the Next.js artifact rows all read these fields.
+
+def test_book_appointment_populates_appointment_state(monkeypatch):
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    fake_appt = {
+        "doctor_name": "Dr. Test", "specialty": "cardiology",
+        "start_time": "2026-06-01T09:00:00", "end_time": "2026-06-01T09:30:00",
+        "slot_id": 42, "confirmation_no": "AGS-999000",
+        "patient_id": "fhir:x", "patient_name": "Test", "status": "confirmed",
+    }
+    monkeypatch.setattr(agent_tools, "_tool_book_appointment",
+                        lambda **kwargs: fake_appt)
+    client = _ScriptedClient([
+        _ai_tool_call("book_appointment",
+                      {"patient_name": "Test", "specialty": "cardiology"}, "c1"),
+        _ai_text("Booked Dr. Test for June 1."),
+    ])
+    with _patch_client_with(client):
+        out = agent_loop_node({"user_input": "book a cardiologist"})
+    assert out.get("appointment") == fake_appt
+
+
+def test_cancel_booking_marks_appointment_cancelled(monkeypatch):
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    monkeypatch.setattr(agent_tools, "_tool_cancel_booking",
+                        lambda **kwargs: {"status": "cancelled", "slot_id": 7})
+    client = _ScriptedClient([
+        _ai_tool_call("cancel_booking", {"slot_id": 7}, "c1"),
+        _ai_text("Cancelled."),
+    ])
+    with _patch_client_with(client):
+        out = agent_loop_node({"user_input": "cancel slot 7"})
+    appt = out.get("appointment") or {}
+    assert appt.get("action") == "cancelled"
+    assert appt.get("slot_id") == 7
+
+
+def test_upsert_patient_populates_record_change(monkeypatch):
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    monkeypatch.setattr(agent_tools, "_tool_upsert_patient", lambda **kwargs: {
+        "operation": "insert", "patient_id": "fhir:newpatient",
+        "before": None, "after": {"name": kwargs["name"]},
+    })
+    client = _ScriptedClient([
+        _ai_tool_call("upsert_patient", {"name": "Jane Doe", "age": 40}, "c1"),
+        _ai_text("Created Jane Doe."),
+    ])
+    with _patch_client_with(client):
+        out = agent_loop_node({"user_input": "add Jane Doe age 40"})
+    rec = out.get("record_change") or {}
+    assert rec.get("operation") == "insert"
+    assert rec.get("patient_id") == "fhir:newpatient"
+    # patient_id is also carried forward at the top level for the trace log
+    assert out.get("patient_id") == "fhir:newpatient"
+
+
+def test_get_patient_history_populates_history_summary(monkeypatch):
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    monkeypatch.setattr(agent_tools, "_tool_get_patient_history", lambda **kwargs: {
+        "record": {"name": "Anjali Mehra", "age": 40, "gender": "Female",
+                   "summary": "Type 2 diabetes mellitus"},
+        "conditions": [{"code": {"text": "Type 2 diabetes mellitus"}}],
+        "observations": [{"name": "HbA1c", "value": 7.4, "unit": "%",
+                          "date": "2026-04-12"}],
+    })
+    client = _ScriptedClient([
+        _ai_tool_call("get_patient_history",
+                      {"patient_name": "Anjali Mehra"}, "c1"),
+        _ai_text("Here's the history."),
+    ])
+    with _patch_client_with(client):
+        out = agent_loop_node({"user_input": "show Anjali's history"})
+    summary = out.get("history_summary") or ""
+    assert "Anjali Mehra" in summary
+    assert "diabetes" in summary.lower()
+    assert "HbA1c" in summary
+
+
+def test_medical_search_populates_medical_info_and_sources(monkeypatch):
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    fake_results = [
+        {"title": "Pneumonia symptoms", "snippet": "Cough, fever…",
+         "url": "https://medlineplus.gov/x", "source": "tavily"},
+        {"title": "WHO on pneumonia", "snippet": "…",
+         "url": "https://who.int/y", "source": "tavily"},
+    ]
+    monkeypatch.setattr(agent_tools, "_tool_medical_search",
+                        lambda **kwargs: fake_results)
+    client = _ScriptedClient([
+        _ai_tool_call("medical_search", {"query": "pneumonia symptoms"}, "c1"),
+        _ai_text("Pneumonia commonly presents with…"),
+    ])
+    with _patch_client_with(client):
+        out = agent_loop_node({"user_input": "symptoms of pneumonia"})
+    assert out.get("medical_info") == fake_results
+    sources = out.get("sources") or []
+    assert len(sources) == 2
+    assert sources[0]["index"] == 1
+    assert "medlineplus" in sources[0]["url"]
+
+
+def test_doctor_schedule_populates_schedule_results(monkeypatch):
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    fake = {"doctor": {"name": "Dr. Nair"},
+            "schedule": [{"slot_id": 1, "start_time": "2026-06-01T09:00:00",
+                          "booked": 0}]}
+    monkeypatch.setattr(agent_tools, "_tool_get_doctor_schedule",
+                        lambda **kwargs: fake)
+    client = _ScriptedClient([
+        _ai_tool_call("get_doctor_schedule", {"doctor_name": "Nair"}, "c1"),
+        _ai_text("Dr. Nair has openings."),
+    ])
+    with _patch_client_with(client):
+        out = agent_loop_node({"user_input": "Dr. Nair's calendar"})
+    assert out.get("schedule_results") == fake
+
+
+def test_list_my_bookings_populates_bookings_results(monkeypatch):
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    fake = [{"slot_id": 1, "confirmation_no": "AGS-111", "doctor_name": "X"}]
+    monkeypatch.setattr(agent_tools, "_tool_list_my_bookings",
+                        lambda **kwargs: fake)
+    client = _ScriptedClient([
+        _ai_tool_call("list_my_bookings", {"patient_id": "fhir:x"}, "c1"),
+        _ai_text("You have one."),
+    ])
+    with _patch_client_with(client):
+        out = agent_loop_node({
+            "user_input": "show my bookings",
+            "patient_id": "fhir:x",
+            "patient_name": "X",
+        })
+    assert out.get("bookings_results") == fake
+
+
+def test_get_audit_log_populates_audit_results(monkeypatch):
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    fake = [{"id": 1, "ts": "2026-05-27T10:00:00Z", "actor": "patient_chat",
+             "action": "ehr.read"}]
+    monkeypatch.setattr(agent_tools, "_tool_get_audit_log",
+                        lambda **kwargs: fake)
+    client = _ScriptedClient([
+        _ai_tool_call("get_audit_log", {"patient_id": "fhir:x"}, "c1"),
+        _ai_text("Recent access events."),
+    ])
+    with _patch_client_with(client):
+        out = agent_loop_node({"user_input": "who accessed my records"})
+    assert out.get("audit_results") == fake
+
+
+def test_failed_tool_does_not_overwrite_state(monkeypatch):
+    """A tool returning an error must not clobber a previously-populated
+    state field. Otherwise a follow-up failed call could erase the
+    successful booking from one turn back."""
+    from nodes import agent_tools
+    from nodes.agent_loop import agent_loop_node
+
+    monkeypatch.setattr(agent_tools, "_tool_book_appointment",
+                        lambda **kwargs: {"confirmation_no": "AGS-OK",
+                                          "doctor_name": "Real", "slot_id": 1})
+    monkeypatch.setattr(agent_tools, "_tool_cancel_booking",
+                        lambda **kwargs: {"error": "slot not found"})
+
+    from langchain_core.messages import AIMessage
+    combo = AIMessage(content=[
+        {"type": "tool_use", "id": "a", "name": "book_appointment",
+         "input": {"patient_name": "x", "specialty": "cardiology"}},
+        {"type": "tool_use", "id": "b", "name": "cancel_booking",
+         "input": {"slot_id": 999}},
+    ])
+    combo.tool_calls = [
+        {"id": "a", "name": "book_appointment",
+         "args": {"patient_name": "x", "specialty": "cardiology"}},
+        {"id": "b", "name": "cancel_booking", "args": {"slot_id": 999}},
+    ]
+    client = _ScriptedClient([combo, _ai_text("Done.")])
+    with _patch_client_with(client):
+        out = agent_loop_node({"user_input": "book and cancel"})
+    # The booking artifact must survive; the failed cancel doesn't overwrite.
+    assert (out.get("appointment") or {}).get("confirmation_no") == "AGS-OK"
+
+
 # ---------- tool→intent label mapping ----------
 
 def test_tool_to_intent_mapping_covers_all_tools():
+    """Every tool name must map to a real Intent literal in state.py.
+
+    `schedule` and `audit` were promoted to first-class intents in PR #6
+    rather than aliased to `booking`/`records` — see state.Intent comment.
+    """
+    from typing import get_args
+
     from nodes.agent_tools import TOOL_FUNCTIONS, tool_to_intent
+    from state import Intent
+    valid = set(get_args(Intent))
     for name in TOOL_FUNCTIONS:
         intent = tool_to_intent(name)
-        assert intent in {
-            "booking", "schedule", "records", "history",
-            "medical_search", "audit", "general",
-        }, f"unknown intent label '{intent}' for tool {name}"
+        assert intent in valid, (
+            f"tool {name} maps to '{intent}' which is not a real Intent literal. "
+            f"Valid intents: {sorted(valid)}"
+        )
 
 
 # ---------- dispatcher actually honors monkeypatches ----------

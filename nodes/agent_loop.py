@@ -121,6 +121,102 @@ def _extract_tool_calls(message: Any) -> list[dict]:
 _MAX_TURNS = 6
 
 
+def _accumulate_state(
+    artifacts: dict, tool_name: str, tool_args: dict, tool_result: Any,
+) -> None:
+    """Map a single tool result into the legacy HealthcareState fields.
+
+    The Streamlit panel, FastAPI `/chat` `done` payload, deterministic eval,
+    and Next.js artifact rows ALL read these fields. Without this mapping
+    the agent path looks like it works (Claude's prose mentions the booking)
+    but the structured-state contract is silently broken.
+
+    Mutates `artifacts` in place. Skips updates when the tool errored so a
+    failed call doesn't overwrite a successful one from the same turn.
+    """
+    if not isinstance(tool_result, (dict, list)) or (
+        isinstance(tool_result, dict) and tool_result.get("error")
+    ):
+        return
+
+    if tool_name == "book_appointment" and isinstance(tool_result, dict):
+        artifacts["appointment"] = tool_result
+
+    elif tool_name == "cancel_booking" and isinstance(tool_result, dict):
+        # Keep the appointment slot in state but mark it as cancelled so the
+        # UI can render a "cancelled X" artifact row.
+        artifacts["appointment"] = {**tool_result, "action": "cancelled"}
+
+    elif tool_name == "upsert_patient" and isinstance(tool_result, dict):
+        artifacts["record_change"] = tool_result
+        # Carry forward the patient_id so subsequent turns / the trace log
+        # have the right reference.
+        if tool_result.get("patient_id"):
+            artifacts["patient_id"] = tool_result["patient_id"]
+
+    elif tool_name == "find_patient" and isinstance(tool_result, dict):
+        if tool_result.get("patient_id"):
+            artifacts["patient_id"] = tool_result["patient_id"]
+        if tool_result.get("name"):
+            artifacts["patient_name"] = tool_result["name"]
+
+    elif tool_name == "get_patient_history" and isinstance(tool_result, dict):
+        # Build a compact text history_summary from the structured result.
+        # This is the naive version — fix #7 will swap in the legacy
+        # history_node's FAISS+LLM synthesis for proper parity.
+        rec = tool_result.get("record") or {}
+        conds = tool_result.get("conditions") or []
+        obs = tool_result.get("observations") or []
+        parts: list[str] = []
+        if rec.get("name"):
+            parts.append(f"**{rec['name']}**" + (
+                f" — {rec.get('age')} {rec.get('gender', '')}" if rec.get("age") else ""
+            ))
+        if rec.get("summary"):
+            parts.append(rec["summary"])
+        if conds:
+            from tools.fhir_client import condition_summary
+            cond_text = condition_summary(conds)
+            if cond_text:
+                parts.append(f"Active conditions: {cond_text}")
+        if obs:
+            obs_lines = [
+                f"{o.get('name')}: {o.get('value')} {o.get('unit') or ''}".strip()
+                for o in obs[:4]
+            ]
+            parts.append("Recent observations — " + "; ".join(obs_lines))
+        if parts:
+            artifacts["history_summary"] = "\n".join(parts)
+
+    elif tool_name == "medical_search" and isinstance(tool_result, list):
+        # Match the legacy medical_search_node shape:
+        #   medical_info = [{"synthesis": ...}] + raw_results
+        #   sources      = [{"index": i, "title", "url", "source"}, ...]
+        # We don't synthesize here — fix #7 will route this through the
+        # legacy node so we get the same cited synthesis as graph mode.
+        artifacts["medical_info"] = list(tool_result)
+        artifacts["sources"] = [
+            {"index": i + 1, "title": r.get("title", ""),
+             "url": r.get("url", ""), "source": r.get("source", "unknown")}
+            for i, r in enumerate(tool_result)
+        ]
+
+    elif tool_name == "get_doctor_schedule" and isinstance(tool_result, dict):
+        artifacts["schedule_results"] = tool_result
+
+    elif tool_name == "list_my_bookings" and isinstance(tool_result, list):
+        artifacts["bookings_results"] = tool_result
+
+    elif tool_name == "list_doctors" and isinstance(tool_result, list):
+        artifacts["doctor_results"] = tool_result
+
+    elif tool_name == "list_patients" and isinstance(tool_result, list):
+        artifacts["patient_listing"] = tool_result
+
+    elif tool_name == "get_audit_log" and isinstance(tool_result, list):
+        artifacts["audit_results"] = tool_result
+
+
 def agent_loop_node(state: HealthcareState) -> dict:
     """Single-node alternative to classify→branches→compose."""
     from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -148,6 +244,9 @@ def agent_loop_node(state: HealthcareState) -> dict:
 
     tool_log: list[dict] = []
     intents_seen: set[str] = set()
+    # Accumulator for the structured-state contract (HealthcareState fields
+    # that the UI panels, eval, and audit log all read).
+    artifacts: dict[str, Any] = {}
 
     for turn in range(_MAX_TURNS):
         try:
@@ -162,6 +261,7 @@ def agent_loop_node(state: HealthcareState) -> dict:
                 "intents": ["general"],
                 "error": f"LLM call failed: {exc}",
                 "tool_log": tool_log,
+                **artifacts,  # preserve anything we did manage to gather
             }
 
         tool_calls = _extract_tool_calls(response)
@@ -179,6 +279,7 @@ def agent_loop_node(state: HealthcareState) -> dict:
                     "stop_reason": "end_turn",
                     "tool_calls": 0,
                 }],
+                **artifacts,
             }
 
         # Execute every tool_use block in this turn, in order.
@@ -190,6 +291,7 @@ def agent_loop_node(state: HealthcareState) -> dict:
                         json.dumps(args, default=str)[:120])
             result = dispatch(name, args)
             intents_seen.add(tool_to_intent(name))
+            _accumulate_state(artifacts, name, args, result)
             tool_log.append({
                 "node": "agent_loop",
                 "turn": turn,
@@ -214,6 +316,7 @@ def agent_loop_node(state: HealthcareState) -> dict:
         "tool_log": tool_log + [{"node": "agent_loop",
                                   "stop_reason": "max_turns_exceeded"}],
         "error": "Exceeded max tool-use turns",
+        **artifacts,
     }
 
 
