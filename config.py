@@ -141,7 +141,14 @@ def load_settings() -> Settings:
 
 
 # Constants used elsewhere in the codebase
-INTENTS = ("booking", "records", "history", "medical_search", "general")
+# Must stay in sync with state.Intent. `schedule` and `audit` were promoted
+# to first-class intents when the agent_loop added tools that don't fit
+# under booking/records (get_doctor_schedule, list_my_bookings,
+# get_audit_log). `emergency` is set by the safety classifier.
+INTENTS = (
+    "booking", "records", "history", "medical_search",
+    "schedule", "audit", "emergency", "general",
+)
 SPECIALTIES = (
     "general_practice", "cardiology", "endocrinology", "nephrology",
     "neurology", "pulmonology", "oncology", "psychiatry", "dermatology",

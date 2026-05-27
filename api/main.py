@@ -343,6 +343,11 @@ async def chat_stream(req: ChatRequest):
                     "history_summary": accumulated.get("history_summary"),
                     "medical_info": accumulated.get("medical_info"),
                     "sources": accumulated.get("sources"),
+                    # Agent-mode-only structured fields (populated by react path)
+                    "schedule_results": accumulated.get("schedule_results"),
+                    "bookings_results": accumulated.get("bookings_results"),
+                    "audit_results": accumulated.get("audit_results"),
+                    "doctor_results": accumulated.get("doctor_results"),
                     "tool_log": accumulated.get("tool_log"),
                     "error": accumulated.get("error"),
                 })
