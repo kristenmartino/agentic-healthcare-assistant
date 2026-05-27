@@ -360,28 +360,48 @@ TOOL_SPECS: list[dict] = [
 ]
 
 
-# Map name → callable for the dispatcher.
-TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
-    "book_appointment": _tool_book_appointment,
-    "cancel_booking": _tool_cancel_booking,
-    "list_doctors": _tool_list_doctors,
-    "get_doctor_schedule": _tool_get_doctor_schedule,
-    "list_my_bookings": _tool_list_my_bookings,
-    "find_patient": _tool_find_patient,
-    "list_patients": _tool_list_patients,
-    "get_patient_history": _tool_get_patient_history,
-    "upsert_patient": _tool_upsert_patient,
-    "medical_search": _tool_medical_search,
-    "get_audit_log": _tool_get_audit_log,
+# Map tool name → name of the module-level function that implements it.
+# We store STRINGS rather than function references so dispatch resolves
+# the function at call time via getattr(thismodule, …). This lets tests
+# monkeypatch the underscore functions directly and have the change take
+# effect through dispatch — the old behavior (storing direct references)
+# silently bypassed monkeypatches.
+TOOL_FUNCTIONS: dict[str, str] = {
+    "book_appointment": "_tool_book_appointment",
+    "cancel_booking": "_tool_cancel_booking",
+    "list_doctors": "_tool_list_doctors",
+    "get_doctor_schedule": "_tool_get_doctor_schedule",
+    "list_my_bookings": "_tool_list_my_bookings",
+    "find_patient": "_tool_find_patient",
+    "list_patients": "_tool_list_patients",
+    "get_patient_history": "_tool_get_patient_history",
+    "upsert_patient": "_tool_upsert_patient",
+    "medical_search": "_tool_medical_search",
+    "get_audit_log": "_tool_get_audit_log",
 }
+
+
+def _resolve(fn_name: str) -> Callable[..., Any] | None:
+    """Look up a tool implementation by its function name on this module.
+
+    Resolved late (rather than at import time) so test-time monkeypatching
+    of the underscore functions takes effect through dispatch.
+    """
+    import sys
+    mod = sys.modules[__name__]
+    fn = getattr(mod, fn_name, None)
+    return fn if callable(fn) else None
 
 
 def dispatch(name: str, args: dict) -> Any:
     """Execute a tool by name with parsed args. Catches exceptions so a
     misbehaving tool surfaces as a tool result, not a graph crash."""
-    fn = TOOL_FUNCTIONS.get(name)
-    if not fn:
+    fn_name = TOOL_FUNCTIONS.get(name)
+    if not fn_name:
         return {"error": f"Unknown tool: {name}"}
+    fn = _resolve(fn_name)
+    if fn is None:
+        return {"error": f"Tool implementation for '{name}' is missing"}
     try:
         return fn(**args)
     except TypeError as exc:

@@ -242,6 +242,34 @@ def test_tool_to_intent_mapping_covers_all_tools():
         }, f"unknown intent label '{intent}' for tool {name}"
 
 
+# ---------- dispatcher actually honors monkeypatches ----------
+#
+# Regression for PR #6 review: the prior `TOOL_FUNCTIONS = {name: fn_ref}`
+# captured function references at import time, so patching the underscore
+# function on the module didn't change what dispatch saw. The fix
+# (`TOOL_FUNCTIONS = {name: fn_name_str}` + late resolve) is what these
+# tests guard.
+
+def test_monkeypatching_underscore_function_flows_through_dispatch(monkeypatch):
+    from nodes import agent_tools
+
+    sentinel = {"i-was-stubbed": True}
+    monkeypatch.setattr(agent_tools, "_tool_find_patient",
+                        lambda name: sentinel)
+    result = agent_tools.dispatch("find_patient", {"name": "anyone"})
+    assert result is sentinel, (
+        "dispatch returned the original function's result, not the stub — "
+        "the late-resolve change in TOOL_FUNCTIONS is broken"
+    )
+
+
+def test_dispatch_missing_implementation_returns_error(monkeypatch):
+    from nodes import agent_tools
+    monkeypatch.delattr(agent_tools, "_tool_find_patient")
+    result = agent_tools.dispatch("find_patient", {"name": "x"})
+    assert "missing" in result.get("error", "").lower()
+
+
 # ---------- dispatcher graceful errors ----------
 
 def test_dispatch_unknown_tool_returns_error():
