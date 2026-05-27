@@ -8,7 +8,9 @@ A LangGraph-based agentic assistant that classifies user intent, fans out to up 
 
 ▶ **[<!-- replace with the Streamlit Cloud URL after first deploy --> healthcare-assistant.streamlit.app](https://healthcare-assistant.streamlit.app)** — token-streamed chat, FHIR-backed patient lookups, PHI audit log, clinical safety triage. Deploy your own copy in five minutes via [`DEPLOY.md`](DEPLOY.md).
 
-▶ **MCP server demo** — Claude Desktop driving the assistant's 8 tools via MCP. *(Loom embed coming after recording — see [`mcp_server/CLAUDE_DESKTOP_SETUP.md`](mcp_server/CLAUDE_DESKTOP_SETUP.md) for the 90-second flow.)*
+▶ **2-minute UI walkthrough** — *(Loom URL after recording — see [`docs/UI_LOOM_SCRIPT.md`](docs/UI_LOOM_SCRIPT.md) for the talking-points script.)*
+
+▶ **MCP server demo** — Claude Desktop driving the assistant's 8 tools via MCP. *(Loom URL after recording — see [`mcp_server/CLAUDE_DESKTOP_SETUP.md`](mcp_server/CLAUDE_DESKTOP_SETUP.md) for the 90-second flow.)*
 
 ## Architecture
 
