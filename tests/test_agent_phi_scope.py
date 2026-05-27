@@ -259,3 +259,256 @@ def test_agent_loop_with_clinician_role_unlocks_list_patients(monkeypatch):
             "role": "clinician",
         })
     assert called["n"] == 1
+
+
+# ---------- review-fix #11: post-resolution PHI checks ----------
+#
+# Direct response to the second review. Four real holes that the
+# args-only authorization step left open:
+#   - get_patient_history could read any patient by name
+#   - cancel_booking could cancel any slot by id/confirmation
+#   - upsert_patient could update arbitrary existing records
+#   - no-active-patient scope was too permissive
+#
+# These tests stub the EHR lookups so the dispatcher's pre-resolution
+# step (find_patient_by_name / list_all_bookings) sees deterministic
+# data, and verify the denial happens BEFORE the tool function runs
+# (no mutation can have leaked through).
+
+def test_get_patient_history_denied_for_other_patient(monkeypatch):
+    """patient_chat asking for a name that resolves to a different
+    patient_id than the active one must be denied at dispatch."""
+    from tools import ehr
+    monkeypatch.setattr(
+        ehr, "find_patient_by_name",
+        lambda name, settings=None, actor=None: {"patient_id": "fhir:other", "name": name},
+    )
+    called = {"tool": 0}
+
+    def _should_not_run(*args, **kwargs):
+        called["tool"] += 1
+        return {"oops": "tool ran despite denial"}
+
+    monkeypatch.setattr(agent_tools, "_tool_get_patient_history", _should_not_run)
+    result = agent_tools.dispatch(
+        "get_patient_history", {"patient_name": "David Thompson"},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+    assert called["tool"] == 0, "tool was invoked despite cross-patient denial"
+
+
+def test_get_patient_history_allowed_for_active_patient(monkeypatch):
+    """Name that resolves to the active patient_id IS allowed."""
+    from tools import ehr
+    monkeypatch.setattr(
+        ehr, "find_patient_by_name",
+        lambda name, settings=None, actor=None: {"patient_id": "fhir:anjali-mehra", "name": name},
+    )
+    monkeypatch.setattr(agent_tools, "_tool_get_patient_history",
+                        lambda **kwargs: {"history_summary": "ok"})
+    result = agent_tools.dispatch(
+        "get_patient_history", {"patient_name": "Anjali Mehra"},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    assert result.get("history_summary") == "ok"
+
+
+def test_get_patient_history_denied_when_no_active_patient(monkeypatch):
+    monkeypatch.setattr(agent_tools, "_tool_get_patient_history",
+                        lambda **kwargs: {"oops": True})
+    result = agent_tools.dispatch(
+        "get_patient_history", {"patient_name": "Anyone"},
+        scope={"role": "patient_chat"},  # no patient_id
+    )
+    assert "Not authorized" in (result.get("error") or "")
+
+
+def test_get_patient_history_denied_for_nonexistent_name_in_patient_chat(monkeypatch):
+    """Patient-chat probing by name is a leak vector even on misses —
+    the lack-of-match signal is information about who's a patient."""
+    from tools import ehr
+    monkeypatch.setattr(ehr, "find_patient_by_name",
+                        lambda name, settings=None, actor=None: None)
+    monkeypatch.setattr(agent_tools, "_tool_get_patient_history",
+                        lambda **kwargs: {"oops": True})
+    result = agent_tools.dispatch(
+        "get_patient_history", {"patient_name": "FishingExpedition"},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+
+
+def test_cancel_booking_denied_for_other_patient_slot(monkeypatch):
+    """patient_chat cancel by slot_id where booked_by_patient_id != active
+    must be denied BEFORE the cancel runs."""
+    from tools import appointments
+    monkeypatch.setattr(appointments, "list_all_bookings", lambda *a, **kw: [
+        {"slot_id": 99, "booked_by_patient_id": "fhir:other",
+         "confirmation_no": "AGS-OTHER"},
+    ])
+    called = {"tool": 0}
+
+    def _should_not_run(*args, **kwargs):
+        called["tool"] += 1
+        return {"status": "cancelled"}
+
+    monkeypatch.setattr(agent_tools, "_tool_cancel_booking", _should_not_run)
+    result = agent_tools.dispatch(
+        "cancel_booking", {"slot_id": 99},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+    assert called["tool"] == 0
+
+
+def test_cancel_booking_by_confirmation_also_checks_ownership(monkeypatch):
+    """confirmation_no path must also resolve to ownership before
+    cancelling — leaked confirmation numbers shouldn't be weaponizable."""
+    from tools import appointments
+    monkeypatch.setattr(appointments, "list_all_bookings", lambda *a, **kw: [
+        {"slot_id": 99, "booked_by_patient_id": "fhir:other",
+         "confirmation_no": "AGS-LEAKED"},
+    ])
+    monkeypatch.setattr(agent_tools, "_tool_cancel_booking",
+                        lambda **kw: {"status": "cancelled"})
+    result = agent_tools.dispatch(
+        "cancel_booking", {"confirmation_no": "AGS-LEAKED"},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+
+
+def test_cancel_own_booking_allowed(monkeypatch):
+    from tools import appointments
+    monkeypatch.setattr(appointments, "list_all_bookings", lambda *a, **kw: [
+        {"slot_id": 7, "booked_by_patient_id": "fhir:active",
+         "confirmation_no": "AGS-OK"},
+    ])
+    monkeypatch.setattr(agent_tools, "_tool_cancel_booking",
+                        lambda **kw: {"status": "cancelled", "slot_id": 7})
+    result = agent_tools.dispatch(
+        "cancel_booking", {"slot_id": 7},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    assert result.get("status") == "cancelled"
+
+
+def test_cancel_booking_denied_when_no_active_patient(monkeypatch):
+    """Walk-in scope can't cancel anything — the agent's session is not
+    proof of identity."""
+    monkeypatch.setattr(agent_tools, "_tool_cancel_booking",
+                        lambda **kw: {"status": "cancelled"})
+    result = agent_tools.dispatch(
+        "cancel_booking", {"slot_id": 7},
+        scope={"role": "patient_chat"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+
+
+def test_upsert_patient_denied_when_updating_other_patient(monkeypatch):
+    """An existing record for someone else cannot be modified through
+    patient_chat, even if the agent claims it's their record."""
+    from tools import ehr
+    monkeypatch.setattr(
+        ehr, "find_patient_by_name",
+        lambda name, settings=None, actor=None: {"patient_id": "fhir:other", "name": name},
+    )
+    called = {"tool": 0}
+
+    def _should_not_run(**kwargs):
+        called["tool"] += 1
+        return {"operation": "update"}
+
+    monkeypatch.setattr(agent_tools, "_tool_upsert_patient", _should_not_run)
+    result = agent_tools.dispatch(
+        "upsert_patient", {"name": "David Thompson", "age": 60},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+    assert called["tool"] == 0, "upsert ran despite cross-patient update attempt"
+
+
+def test_upsert_new_patient_allowed_when_no_existing(monkeypatch):
+    """New patient name (no existing record): allowed — registration flow."""
+    from tools import ehr
+    monkeypatch.setattr(ehr, "find_patient_by_name",
+                        lambda name, settings=None, actor=None: None)
+    monkeypatch.setattr(agent_tools, "_tool_upsert_patient", lambda **kw: {
+        "operation": "insert", "patient_id": "fhir:active",
+    })
+    result = agent_tools.dispatch(
+        "upsert_patient", {"name": "Brand New", "age": 30},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    assert result.get("operation") == "insert"
+
+
+def test_upsert_own_record_allowed(monkeypatch):
+    from tools import ehr
+    monkeypatch.setattr(
+        ehr, "find_patient_by_name",
+        lambda name, settings=None, actor=None: {"patient_id": "fhir:active",
+                                                  "name": "Active Patient"},
+    )
+    monkeypatch.setattr(agent_tools, "_tool_upsert_patient", lambda **kw: {
+        "operation": "update", "patient_id": "fhir:active",
+    })
+    result = agent_tools.dispatch(
+        "upsert_patient", {"name": "Active Patient", "summary": "new note"},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    assert result.get("operation") == "update"
+
+
+def test_list_my_bookings_denied_when_no_active_patient(monkeypatch):
+    monkeypatch.setattr(agent_tools, "_tool_list_my_bookings", lambda **kw: [])
+    result = agent_tools.dispatch(
+        "list_my_bookings", {"patient_id": "fhir:anyone"},
+        scope={"role": "patient_chat"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+
+
+def test_get_audit_log_denied_when_no_active_patient(monkeypatch):
+    monkeypatch.setattr(agent_tools, "_tool_get_audit_log", lambda **kw: [])
+    result = agent_tools.dispatch(
+        "get_audit_log", {"patient_id": "fhir:anyone"},
+        scope={"role": "patient_chat"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+
+
+def test_find_patient_denied_when_no_active_patient(monkeypatch):
+    """find_patient is itself a probe — walk-in scope can't fish."""
+    monkeypatch.setattr(agent_tools, "_tool_find_patient",
+                        lambda name: {"patient_id": "fhir:x"})
+    result = agent_tools.dispatch(
+        "find_patient", {"name": "Anyone"},
+        scope={"role": "patient_chat"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+
+
+def test_walk_in_can_still_book_a_doctor(monkeypatch):
+    """The blanket no-active-patient policy must not break walk-in booking.
+    book_appointment is not in the PHI-reading set."""
+    monkeypatch.setattr(agent_tools, "_tool_book_appointment",
+                        lambda **kw: {"confirmation_no": "AGS-NEW",
+                                       "slot_id": 1})
+    result = agent_tools.dispatch(
+        "book_appointment", {"patient_name": "Walk-In Person",
+                              "specialty": "general_practice"},
+        scope={"role": "patient_chat"},
+    )
+    assert result.get("confirmation_no") == "AGS-NEW"
+
+
+def test_walk_in_can_still_search_medical_info(monkeypatch):
+    monkeypatch.setattr(agent_tools, "_tool_medical_search",
+                        lambda **kw: [{"title": "x"}])
+    result = agent_tools.dispatch(
+        "medical_search", {"query": "flu"},
+        scope={"role": "patient_chat"},
+    )
+    assert result == [{"title": "x"}]

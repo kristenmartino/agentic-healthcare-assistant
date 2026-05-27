@@ -512,6 +512,9 @@ def _authorize(tool_name: str, args: dict, scope: dict | None) -> str | None:
     """Return None if the call is allowed, or an error string if denied.
 
     Fail-closed: missing scope or missing role -> treated as patient_chat.
+    Args-only checks; tools that need post-lookup verification (e.g.
+    cancel_booking needs the slot's owner, get_patient_history needs the
+    requested name to resolve) call _pre_authorize_resolutions next.
     """
     scope = scope or {}
     role = scope.get("role") or "patient_chat"
@@ -530,6 +533,15 @@ def _authorize(tool_name: str, args: dict, scope: dict | None) -> str | None:
     # patient_chat-specific argument constraints below.
     if role != "patient_chat":
         return None
+
+    # No active patient = no PHI reads. Walk-ins can book and search; they
+    # cannot read existing records, audit, or cancel anything.
+    if not active_pid and tool_name in _PHI_TOOLS_NEEDING_ACTIVE_PID:
+        return (
+            f"Not authorized: '{tool_name}' requires an active patient "
+            "context in patient_chat role. Select a patient first or use "
+            "a walk-in flow that doesn't read existing records."
+        )
 
     if tool_name == "list_my_bookings":
         requested_pid = args.get("patient_id")
@@ -550,11 +562,124 @@ def _authorize(tool_name: str, args: dict, scope: dict | None) -> str | None:
             return ("Not authorized: get_audit_log cannot return events for "
                     f"another patient. Active patient is {active_pid!r}.")
 
-    if tool_name == "get_patient_history":
-        # Allow lookups, but if an active patient is selected the requested
-        # name should resolve to that patient. We can't enforce name-vs-id
-        # without a roundtrip; the audit log captures both for review.
-        pass
+    # get_patient_history, cancel_booking, upsert_patient all need a
+    # post-resolution check — handled in _pre_authorize_resolutions so we
+    # don't have to thread scope into every tool function.
+    return None
+
+
+# Tools that read PHI tied to a specific existing patient; require an
+# active patient context in patient_chat role.
+_PHI_TOOLS_NEEDING_ACTIVE_PID: set[str] = {
+    "find_patient",
+    "get_patient_history",
+    "list_my_bookings",
+    "get_audit_log",
+    "cancel_booking",
+}
+
+
+def _pre_authorize_resolutions(
+    tool_name: str, args: dict, scope: dict | None,
+) -> str | None:
+    """Authorization checks that depend on a lookup the tool would do
+    anyway. We do the lookup here BEFORE the tool runs so mutations
+    (cancel_booking, upsert_patient) can be denied before they touch the
+    DB — denying after the mutation is useless.
+
+    Returns None to allow or an error string to deny.
+    """
+    scope = scope or {}
+    role = scope.get("role") or "patient_chat"
+    if role != "patient_chat":
+        return None
+    active_pid = scope.get("patient_id")
+    if not active_pid:
+        # The args-only _authorize step already covered the "no active
+        # patient" denials. Anything left here is fine to fall through.
+        return None
+
+    from config import load_settings
+
+    if tool_name == "cancel_booking":
+        from tools.appointments import list_all_bookings
+        s = load_settings()
+        slot_id = args.get("slot_id")
+        conf = args.get("confirmation_no")
+        if not slot_id and not conf:
+            # _tool_cancel_booking itself returns a not_found result; let
+            # that path handle it.
+            return None
+        try:
+            bookings = list_all_bookings(s.appointments_db_path,
+                                         upcoming_only=False)
+        except Exception:
+            # If the DB is unreachable, fail closed.
+            return ("Not authorized: cancel_booking could not verify booking "
+                    "ownership.")
+        target = None
+        for b in bookings:
+            if slot_id and b.get("slot_id") == slot_id:
+                target = b
+                break
+            if conf and b.get("confirmation_no") == conf:
+                target = b
+                break
+        if target is None:
+            # Tool will return not_found later. Don't block.
+            return None
+        owner = target.get("booked_by_patient_id")
+        if owner and owner != active_pid:
+            return (
+                "Not authorized: cancel_booking targets a booking owned by "
+                f"patient {owner!r}, not the active patient {active_pid!r}."
+            )
+
+    if tool_name in ("get_patient_history", "find_patient"):
+        requested = args.get("patient_name") or args.get("name")
+        if not requested:
+            return None
+        from tools.ehr import find_patient_by_name
+        try:
+            existing = find_patient_by_name(requested, load_settings(),
+                                            actor="agent")
+        except Exception:
+            return None
+        if existing and existing.get("patient_id") != active_pid:
+            return (
+                f"Not authorized: '{tool_name}' for {requested!r} resolves "
+                f"to {existing.get('patient_id')!r}, which is not the active "
+                f"patient {active_pid!r}."
+            )
+        if not existing:
+            # Reading a non-existent patient: deny because the patient_chat
+            # path shouldn't be probing for who exists.
+            return (
+                f"Not authorized: no patient named {requested!r} found, and "
+                "patient_chat cannot search for arbitrary names. Use the "
+                "active patient context."
+            )
+
+    if tool_name == "upsert_patient":
+        requested = args.get("name")
+        if not requested:
+            return None
+        from tools.ehr import find_patient_by_name
+        try:
+            existing = find_patient_by_name(requested, load_settings(),
+                                            actor="agent")
+        except Exception:
+            return None
+        if existing and existing.get("patient_id") != active_pid:
+            # Patient-chat can NOT update an existing record that belongs
+            # to a different patient. (Updating the active patient's own
+            # record is fine; creating a new patient is fine.)
+            return (
+                "Not authorized: upsert_patient would update an existing "
+                f"record for {requested!r} (patient_id "
+                f"{existing.get('patient_id')!r}) which differs from the "
+                f"active patient {active_pid!r}."
+            )
 
     return None
 
@@ -614,7 +739,10 @@ def dispatch(name: str, args: dict, scope: dict | None = None) -> Any:
     if not fn_name:
         return {"error": f"Unknown tool: {name}"}
 
-    denied = _authorize(name, args, scope)
+    denied = (
+        _authorize(name, args, scope)
+        or _pre_authorize_resolutions(name, args, scope)
+    )
     if denied:
         logger.info("dispatch denied: %s (scope=%s, args=%s)",
                     denied, scope, args)

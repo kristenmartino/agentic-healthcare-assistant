@@ -393,21 +393,34 @@ def test_two_turn_book_then_cancel_resolves_deterministically(monkeypatch):
 
     monkeypatch.setattr(agent_tools, "_tool_cancel_booking", _fake_cancel)
 
-    # Turn 1: book.
+    # Stub list_all_bookings so the cancel_booking ownership check sees
+    # the active patient as the owner of slot 77. (Fix #11 added a
+    # pre-cancel ownership check that needs to resolve the slot.)
+    from tools import appointments
+    monkeypatch.setattr(
+        appointments, "list_all_bookings",
+        lambda *args, **kwargs: [
+            {"slot_id": 77, "booked_by_patient_id": "fhir:active",
+             "confirmation_no": "AGS-CANCEL"},
+        ],
+    )
+
+    # Turn 1: book. role=admin to skip patient-chat policy on this
+    # accumulator-focused test (booking flow is fine in patient_chat too;
+    # admin just avoids needing an active_pid in state).
     client1 = _ScriptedClient([
         _ai_tool_call("book_appointment",
                       {"patient_name": "X", "specialty": "cardiology"}, "c1"),
         _ai_text("Booked AGS-CANCEL."),
     ])
     with _patch_client_with(client1):
-        turn1 = agent_loop_node({"user_input": "book a cardiologist"})
+        turn1 = agent_loop_node({"user_input": "book a cardiologist",
+                                  "role": "admin"})
     assert turn1["appointment"]["confirmation_no"] == "AGS-CANCEL"
 
-    # Turn 2: "cancel that appointment". The system hint embeds slot_id=77,
-    # so a correct model call would pass slot_id=77 to cancel_booking.
-    # Our scripted client makes Claude pick slot_id=77 explicitly to verify
-    # the dispatch + state plumbing — the system-hint presence is asserted
-    # separately above; this test asserts the cancel landed on the right slot.
+    # Turn 2: "cancel that appointment". Active patient is set so the
+    # ownership check passes (we stubbed list_all_bookings to say slot 77
+    # belongs to fhir:active).
     client2 = _ScriptedClient([
         _ai_tool_call("cancel_booking", {"slot_id": 77}, "c2"),
         _ai_text("Cancelled."),
@@ -416,6 +429,7 @@ def test_two_turn_book_then_cancel_resolves_deterministically(monkeypatch):
         turn2 = agent_loop_node({
             "user_input": "cancel that appointment",
             "appointment": turn1["appointment"],
+            "patient_id": "fhir:active",
             "history": [
                 {"role": "user", "content": "book a cardiologist"},
                 {"role": "assistant", "content": "Booked AGS-CANCEL."},
@@ -456,6 +470,9 @@ def test_book_appointment_populates_appointment_state(monkeypatch):
 
 
 def test_cancel_booking_marks_appointment_cancelled(monkeypatch):
+    """Verifies the accumulator mapping. Uses role=admin to bypass the
+    ownership pre-auth check, which is tested separately in
+    test_agent_phi_scope.py::test_cancel_*."""
     from nodes import agent_tools
     from nodes.agent_loop import agent_loop_node
 
@@ -466,7 +483,7 @@ def test_cancel_booking_marks_appointment_cancelled(monkeypatch):
         _ai_text("Cancelled."),
     ])
     with _patch_client_with(client):
-        out = agent_loop_node({"user_input": "cancel slot 7"})
+        out = agent_loop_node({"user_input": "cancel slot 7", "role": "admin"})
     appt = out.get("appointment") or {}
     assert appt.get("action") == "cancelled"
     assert appt.get("slot_id") == 7
@@ -510,7 +527,11 @@ def test_get_patient_history_populates_history_summary(monkeypatch):
         _ai_text("Here's the history."),
     ])
     with _patch_client_with(client):
-        out = agent_loop_node({"user_input": "show Anjali's history"})
+        # role=admin bypasses the patient-chat post-resolution check;
+        # the cross-patient denial is tested separately in
+        # test_agent_phi_scope.py.
+        out = agent_loop_node({"user_input": "show Anjali's history",
+                                "role": "admin"})
     summary = out.get("history_summary") or ""
     assert "Anjali Mehra" in summary
     assert "diabetes" in summary.lower()
@@ -610,7 +631,11 @@ def test_get_audit_log_populates_audit_results(monkeypatch):
         _ai_text("Recent access events."),
     ])
     with _patch_client_with(client):
-        out = agent_loop_node({"user_input": "who accessed my records"})
+        # patient_id passed so the patient-chat audit check accepts it.
+        out = agent_loop_node({
+            "user_input": "who accessed my records",
+            "patient_id": "fhir:x",
+        })
     assert out.get("audit_results") == fake
 
 
@@ -676,12 +701,17 @@ def test_tool_to_intent_mapping_covers_all_tools():
 # tests guard.
 
 def test_monkeypatching_underscore_function_flows_through_dispatch(monkeypatch):
+    """Verifies the dispatcher resolves functions late (via getattr on the
+    module) so test monkeypatches take effect. Uses admin scope to bypass
+    the new PHI policy checks — those are tested separately in
+    test_agent_phi_scope.py."""
     from nodes import agent_tools
 
     sentinel = {"i-was-stubbed": True}
     monkeypatch.setattr(agent_tools, "_tool_find_patient",
                         lambda name: sentinel)
-    result = agent_tools.dispatch("find_patient", {"name": "anyone"})
+    result = agent_tools.dispatch("find_patient", {"name": "anyone"},
+                                  scope={"role": "admin"})
     assert result is sentinel, (
         "dispatch returned the original function's result, not the stub — "
         "the late-resolve change in TOOL_FUNCTIONS is broken"
@@ -691,7 +721,8 @@ def test_monkeypatching_underscore_function_flows_through_dispatch(monkeypatch):
 def test_dispatch_missing_implementation_returns_error(monkeypatch):
     from nodes import agent_tools
     monkeypatch.delattr(agent_tools, "_tool_find_patient")
-    result = agent_tools.dispatch("find_patient", {"name": "x"})
+    result = agent_tools.dispatch("find_patient", {"name": "x"},
+                                  scope={"role": "admin"})
     assert "missing" in result.get("error", "").lower()
 
 
