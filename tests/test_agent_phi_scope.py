@@ -142,12 +142,25 @@ def test_list_my_bookings_by_patient_name_denied_for_nonexistent_patient(monkeyp
 
 # ---------- get_audit_log: requires patient_id, must match active ----------
 
-def test_unfiltered_audit_log_denied_for_patient_chat():
+def test_get_audit_log_auto_scopes_to_active_patient(monkeypatch):
+    """The agent prompt says patient-chat sees only their own events;
+    'who accessed my records' should not require Claude to pass patient_id
+    explicitly. Mirror the list_my_bookings auto-scope: when patient_chat
+    has an active patient and the call came in empty, inject the
+    active patient_id."""
+    seen: dict = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return [{"id": 1}]
+
+    monkeypatch.setattr(agent_tools, "_tool_get_audit_log", _capture)
     result = agent_tools.dispatch(
         "get_audit_log", {},
         scope={"role": "patient_chat", "patient_id": "fhir:active"},
     )
-    assert "Not authorized" in (result.get("error") or "")
+    assert result == [{"id": 1}]
+    assert seen.get("patient_id") == "fhir:active"
 
 
 def test_audit_log_for_other_patient_denied():
@@ -651,3 +664,93 @@ def test_walk_in_can_still_search_medical_info(monkeypatch):
         scope={"role": "patient_chat"},
     )
     assert result == [{"title": "x"}]
+
+
+# ---------- fail-closed on EHR lookup failures ----------
+#
+# _pre_authorize_resolutions used to swallow find_patient_by_name
+# exceptions and treat them as "no existing record" → allow. That broke
+# the fail-closed contract when the EHR layer was flaky: we'd let
+# mutations/reads through without verifying ownership. These tests lock
+# in that lookup failures now produce a denial, not a silent allow.
+
+
+def _raise_ehr_failure(*args, **kwargs):
+    raise RuntimeError("EHR connection refused (simulated)")
+
+
+def test_get_patient_history_denied_when_pre_auth_lookup_fails(monkeypatch):
+    from tools import ehr
+    monkeypatch.setattr(ehr, "find_patient_by_name", _raise_ehr_failure)
+    called = {"tool": 0}
+
+    def _should_not_run(**kw):
+        called["tool"] += 1
+        return {"record": {}}
+
+    monkeypatch.setattr(agent_tools, "_tool_get_patient_history",
+                        _should_not_run)
+    result = agent_tools.dispatch(
+        "get_patient_history", {"patient_name": "Anjali Mehra"},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+    assert called["tool"] == 0
+
+
+def test_find_patient_denied_when_pre_auth_lookup_fails(monkeypatch):
+    from tools import ehr
+    monkeypatch.setattr(ehr, "find_patient_by_name", _raise_ehr_failure)
+    called = {"tool": 0}
+
+    def _should_not_run(**kw):
+        called["tool"] += 1
+        return {"patient_id": "fhir:x"}
+
+    monkeypatch.setattr(agent_tools, "_tool_find_patient", _should_not_run)
+    result = agent_tools.dispatch(
+        "find_patient", {"name": "Anjali Mehra"},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+    assert called["tool"] == 0
+
+
+def test_list_my_bookings_denied_when_patient_name_lookup_fails(monkeypatch):
+    from tools import ehr
+    monkeypatch.setattr(ehr, "find_patient_by_name", _raise_ehr_failure)
+    called = {"tool": 0}
+
+    def _should_not_run(**kw):
+        called["tool"] += 1
+        return []
+
+    monkeypatch.setattr(agent_tools, "_tool_list_my_bookings", _should_not_run)
+    result = agent_tools.dispatch(
+        "list_my_bookings", {"patient_name": "Anjali Mehra"},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+    assert called["tool"] == 0
+
+
+def test_upsert_patient_denied_when_pre_auth_lookup_fails(monkeypatch):
+    """If we can't verify ownership, refuse to mutate. The old behavior
+    swallowed the exception, treated the patient as "not existing", and
+    happily ran upsert — turning a flaky EHR layer into a silent
+    cross-patient write window."""
+    from tools import ehr
+    monkeypatch.setattr(ehr, "find_patient_by_name", _raise_ehr_failure)
+    called = {"tool": 0}
+
+    def _should_not_run(**kw):
+        called["tool"] += 1
+        return {"operation": "insert"}
+
+    monkeypatch.setattr(agent_tools, "_tool_upsert_patient", _should_not_run)
+    result = agent_tools.dispatch(
+        "upsert_patient", {"name": "Some Patient", "summary": "note"},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+    assert called["tool"] == 0

@@ -566,9 +566,14 @@ def _authorize(tool_name: str, args: dict, scope: dict | None) -> str | None:
         # (needs an EHR lookup to resolve the name → patient_id).
 
     if tool_name == "get_audit_log":
+        # Auto-scope normally injects scope.patient_id when patient_chat
+        # has an active patient. If patient_id is STILL missing here, the
+        # caller is unscoped (walk-in) — and walk-in is already denied by
+        # _PHI_TOOLS_NEEDING_ACTIVE_PID above. This branch handles the
+        # final guard: explicit cross-patient queries.
         if not args.get("patient_id"):
-            return ("Not authorized: get_audit_log requires a patient_id "
-                    "filter in patient_chat role.")
+            return ("Not authorized: get_audit_log could not be scoped to "
+                    "a patient in patient_chat role.")
         if active_pid and args["patient_id"] != active_pid:
             return ("Not authorized: get_audit_log cannot return events for "
                     f"another patient. Active patient is {active_pid!r}.")
@@ -620,8 +625,17 @@ def _pre_authorize_resolutions(
             try:
                 existing = find_patient_by_name(requested, load_settings(),
                                                 actor="agent")
-            except Exception:
-                existing = None
+            except Exception as exc:
+                # Fail closed: if we can't verify ownership, deny rather
+                # than let the mutation through. The previous catch-and-
+                # return-None pattern silently allowed walk-in / cross-
+                # patient writes when the EHR layer was flaky.
+                logger.warning("pre-auth EHR lookup failed for upsert_patient "
+                               "(%s): %s", requested, exc)
+                return (
+                    f"Not authorized: could not verify patient ownership for "
+                    f"upsert_patient ({requested!r}); refusing to run the tool."
+                )
             if existing and not active_pid:
                 # Walk-in: refuse to touch an existing record.
                 return (
@@ -701,8 +715,15 @@ def _pre_authorize_resolutions(
         try:
             existing = find_patient_by_name(requested, load_settings(),
                                             actor="agent")
-        except Exception:
-            return None
+        except Exception as exc:
+            # Fail closed: if the EHR layer is flaky we can't verify the
+            # request targets the active patient — deny the read.
+            logger.warning("pre-auth EHR lookup failed for %s (%s): %s",
+                           tool_name, requested, exc)
+            return (
+                f"Not authorized: could not verify patient ownership for "
+                f"{tool_name} ({requested!r}); refusing to run the tool."
+            )
         if existing and existing.get("patient_id") != active_pid:
             return (
                 f"Not authorized: '{tool_name}' for {requested!r} resolves "
@@ -730,8 +751,13 @@ def _pre_authorize_resolutions(
         try:
             existing = find_patient_by_name(requested, load_settings(),
                                             actor="agent")
-        except Exception:
-            return None
+        except Exception as exc:
+            logger.warning("pre-auth EHR lookup failed for list_my_bookings "
+                           "(%s): %s", requested, exc)
+            return (
+                f"Not authorized: could not verify patient ownership for "
+                f"list_my_bookings ({requested!r}); refusing to run the tool."
+            )
         if not existing:
             return (
                 f"Not authorized: no patient named {requested!r} found, and "
@@ -791,13 +817,19 @@ def _mask_for_scope(tool_name: str, result: Any, scope: dict | None) -> Any:
 def _normalize_args(name: str, args: dict, scope: dict | None) -> dict:
     """Mutate-free arg normalization that runs BEFORE authorization.
 
-    Today this handles two cases:
+    Today this handles three cases:
       1. Auto-scope `list_my_bookings` for patient_chat: when an active
          patient is in scope and the caller didn't pass patient_id or
          patient_name, inject scope.patient_id so the tool returns the
          caller's own bookings. The agent prompt promises this behavior;
          without injection the call would be denied as unscoped.
-      2. Coerce `cancel_booking.slot_id` to int when it arrived as a
+      2. Auto-scope `get_audit_log` the same way: "who accessed my
+         records?" is the canonical patient_chat query, and the prompt
+         describes patient-chat callers seeing only their own events. If
+         we don't inject scope.patient_id, the dispatcher would deny the
+         call as unscoped and the user would see a confusing refusal for
+         a perfectly normal question.
+      3. Coerce `cancel_booking.slot_id` to int when it arrived as a
          numeric string. Without normalization the ownership check in
          _pre_authorize_resolutions compares "99" to 99 and silently
          fails, letting the tool run and cancel another patient's slot.
@@ -813,6 +845,11 @@ def _normalize_args(name: str, args: dict, scope: dict | None) -> dict:
             and scope.get("patient_id")
             and not args.get("patient_id")
             and not args.get("patient_name")):
+        return {**args, "patient_id": scope["patient_id"]}
+
+    if (name == "get_audit_log" and role == "patient_chat"
+            and scope.get("patient_id")
+            and not args.get("patient_id")):
         return {**args, "patient_id": scope["patient_id"]}
 
     if name == "cancel_booking" and args.get("slot_id") is not None:

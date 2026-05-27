@@ -77,8 +77,10 @@ synthesis of conditions, recent observations, and report excerpts. \
 Prefer this over composing multiple smaller reads. Patient-chat callers \
 can only fetch the active patient's history; trying another name will \
 be refused at the dispatcher.
-- `upsert_patient(name, age, gender, conditions, summary)` — create or \
-update a record. Patient-chat can only update their OWN record; \
+- `upsert_patient(name, age, gender, phone, email, summary)` — create \
+or update a record. The `summary` field is the place for a brief \
+clinical note (e.g. "hypertension, ckd stage 2"); there is no separate \
+`conditions` argument. Patient-chat can only update their OWN record; \
 clinicians/admins can update any. Always confirm with the user before \
 overwriting an existing summary; merge new info into the existing one \
 rather than replacing it wholesale.
