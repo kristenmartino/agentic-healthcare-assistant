@@ -74,13 +74,16 @@ def _route_after_safety(state: HealthcareState) -> str:
     """First-fork: emergency → END (skip everything), otherwise pick the
     reasoning strategy.
 
-    `react` (default when Anthropic is the active provider): single
-    agent_loop node that picks tools dynamically. Adds new capabilities
-    without classifier edits. Better at novel queries.
+    `graph` (default): classifier-then-branch fan-out → composer.
+    Predictable, preserves the structured-state contract directly
+    through node outputs, easy to grade on routing eval.
 
-    `graph` (legacy, also the fallback when Anthropic isn't configured):
-    fixed classifier → branch fan-out → composer. Predictable, easy to
-    eval, but limited to the 5 intents.
+    `react` (opt-in via AGENT_MODE=react; requires Anthropic): single
+    agent_loop node that picks tools dynamically. Adds new capabilities
+    without classifier edits. Fail-closed PHI scope guardrails enforce
+    that patient_chat cannot enumerate the table, read/modify other
+    patients' records, or cancel others' bookings. Experimental until
+    more regression coverage lands.
     """
     if state.get("is_emergency"):
         return "__skip_to_end__"

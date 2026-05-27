@@ -25,8 +25,8 @@ A LangGraph-based agentic assistant that classifies user intent, fans out to up 
                                   ▼
                     ┌─────────────┴──────────────┐
                     │                            │
-              AGENT_MODE=react              AGENT_MODE=graph  (legacy)
-              (default w/ Claude)                 │
+              AGENT_MODE=react              AGENT_MODE=graph  (default)
+              (opt-in; experimental)              │
                     │                            ▼
                     ▼                      classify_intent  (5-intent LLM router)
               agent_loop                         │
@@ -45,9 +45,9 @@ A LangGraph-based agentic assistant that classifies user intent, fans out to up 
 
 Two reasoning strategies, gated by `AGENT_MODE`. The safety classifier is shared by both (deterministic regex; never bypassed; emergency queries route directly to END with a hardcoded 911 / 988 template).
 
-**`react` (default when Anthropic is configured)** — a single `agent_loop` node calls Claude with 11 tool schemas (`book_appointment`, `cancel_booking`, `get_doctor_schedule`, `list_my_bookings`, `find_patient`, `list_patients`, `get_patient_history`, `upsert_patient`, `medical_search`, `get_audit_log`, `list_doctors`). Claude picks tools per turn; multi-tool composition is implicit; novel queries like *"what's on Dr. Nair's calendar this week?"* are handled without new classifier intents. Each tool call is audited the same way the legacy nodes are. Capped at 6 tool-use turns.
+**`react` (opt-in; experimental)** — a single `agent_loop` node calls Claude with 11 tool schemas (`book_appointment`, `cancel_booking`, `get_doctor_schedule`, `list_my_bookings`, `find_patient`, `list_patients`, `get_patient_history`, `upsert_patient`, `medical_search`, `get_audit_log`, `list_doctors`). Claude picks tools per turn; multi-tool composition is implicit; novel queries like *"what's on Dr. Nair's calendar this week?"* are handled without new classifier intents. Every tool call goes through a fail-closed dispatcher that checks PHI scope before execution (patient_chat role can't enumerate patients, can't read/modify other patients' records, can't cancel other patients' bookings). Each call is also audited. Capped at 6 tool-use turns. Set `AGENT_MODE=react` to opt in (default is `graph`).
 
-**`graph` (legacy / fallback for non-Anthropic providers)** — the classic classifier-then-branch fan-out. The classifier emits one or more intents from `{booking, records, history, medical_search, general}` and the graph fans out; `compose_response` joins. Predictable, easy to grade on routing eval, but limited to the fixed intent set.
+**`graph` (default)** — the classic classifier-then-branch fan-out. The classifier emits one or more intents from `{booking, records, history, medical_search, general}` and the graph fans out; `compose_response` joins. Predictable, easy to grade on routing eval, preserves the structured-state contract directly through the node outputs.
 
 For multi-intent queries (e.g., *"My father has CKD; book a nephrologist AND summarize latest treatments"*), `react` mode has Claude emit two tool_use blocks in one turn; `graph` mode has the classifier return both intents and LangGraph fan out in parallel. State fields with multiple writers (`tool_log`, `sources`, `intents`, `error`) use `Annotated[T, reducer]` to avoid the "last write wins" silent-data-loss footgun.
 

@@ -482,15 +482,19 @@ def _resolve(fn_name: str) -> Callable[..., Any] | None:
 # is treated as the most restrictive role (patient_chat).
 #
 # The role labels we use today:
-#   - patient_chat (default): the public chat UI. Scoped to ONE patient
-#     at a time. Cannot enumerate the patient table, cannot read other
-#     patients' bookings or audit events. Walk-in (no patient_id) is
-#     even more restricted — can only create a brand-new record.
-#   - clinician: trusted clinical user. Broader read access. Can read
-#     any single patient's record on demand. Cannot dump the full table.
-#   - admin: full access including unfiltered list_patients and
-#     unfiltered get_audit_log. Reserved for the Streamlit Doctor View
-#     and direct MCP calls — NOT for the patient-facing web chat.
+#   - patient_chat (default): the public chat UI. Scoped to ONE active
+#     patient at a time (the sidebar selection). Cannot enumerate the
+#     patient table, cannot read or modify other patients' records,
+#     cannot cancel other patients' bookings. With no active patient
+#     (walk-in flow), cannot read existing records at all — limited to
+#     booking + medical search + creating a brand-new record.
+#   - clinician: trusted clinical user. Broader read access — can list
+#     patients, read any single patient's record, see the unmasked
+#     doctor schedule (booker ids visible). The Streamlit Doctor View
+#     runs as clinician.
+#   - admin: same as clinician PLUS unfiltered get_audit_log. Reserved
+#     for direct MCP calls + back-office tooling — NOT for the
+#     patient-facing web chat.
 
 _TOOL_ROLE_POLICY: dict[str, set[str]] = {
     # tool_name -> set of roles allowed to call it at all
