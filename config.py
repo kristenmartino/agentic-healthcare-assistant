@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-LLMProvider = Literal["groq", "openai", "stub"]
+LLMProvider = Literal["anthropic", "groq", "openai", "stub"]
 EHRBackend = Literal["sqlite", "fhir", "fhir_fixture"]
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -30,9 +30,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 class Settings:
     llm_provider: LLMProvider
     llm_model: str
+    anthropic_api_key: str | None
     groq_api_key: str | None
     openai_api_key: str | None
     tavily_api_key: str | None
+    enable_prompt_caching: bool
 
     enable_persistence: bool
     enable_parallel_fanout: bool
@@ -55,10 +57,18 @@ class Settings:
 
 
 def _detect_provider() -> tuple[LLMProvider, str]:
-    """Pick the first provider that has credentials configured."""
+    """Pick the first provider that has credentials configured.
+
+    Priority order: Anthropic → Groq → OpenAI → Stub. Anthropic (Claude
+    Sonnet 4.6) leads because it's the strongest model for the clinical
+    summarization + multi-intent routing this app does, and prompt caching
+    on the static system prompts gives it a per-call cost edge.
+    """
     forced = os.getenv("LLM_PROVIDER", "").lower()
-    if forced in {"groq", "openai", "stub"}:
-        return forced, _model_for(forced)
+    if forced in {"anthropic", "groq", "openai", "stub"}:
+        return forced, _model_for(forced)  # type: ignore[arg-type]
+    if os.getenv("ANTHROPIC_API_KEY"):
+        return "anthropic", _model_for("anthropic")
     if os.getenv("GROQ_API_KEY"):
         return "groq", _model_for("groq")
     if os.getenv("OPENAI_API_KEY"):
@@ -68,6 +78,7 @@ def _detect_provider() -> tuple[LLMProvider, str]:
 
 def _model_for(provider: LLMProvider) -> str:
     overrides = {
+        "anthropic": os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
         "groq": os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
         "openai": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         "stub": "stub",
@@ -96,9 +107,11 @@ def load_settings() -> Settings:
     return Settings(
         llm_provider=provider,
         llm_model=model,
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         groq_api_key=os.getenv("GROQ_API_KEY"),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         tavily_api_key=os.getenv("TAVILY_API_KEY"),
+        enable_prompt_caching=os.getenv("ENABLE_PROMPT_CACHING", "true").lower() == "true",
 
         enable_persistence=os.getenv("ENABLE_PERSISTENCE", "true").lower() == "true",
         enable_parallel_fanout=os.getenv("ENABLE_PARALLEL_FANOUT", "true").lower() == "true",

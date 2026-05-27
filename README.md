@@ -94,6 +94,25 @@ The compose stack runs a HAPI FHIR R4 server alongside the app and sets `EHR_BAC
 
 The app **runs without any API key** — falls back to a deterministic stub LLM and DuckDuckGo (or stub search if DDG is rate-limited / TLS-blocked). All 10 eval cases still pass in stub mode because they grade routing + state shape, not LLM prose quality.
 
+## LLM provider
+
+Auto-detection priority: **Anthropic → Groq → OpenAI → Stub**. The first one with a key in `.env` wins; the stub fallback keeps the graph runnable for CI and offline development.
+
+| Provider | Default model | Why | Trigger |
+|---|---|---|---|
+| Anthropic | `claude-sonnet-4-6` | Strongest for clinical summarization + multi-intent routing; **prompt caching** on system prompts ≥ 1024 tokens saves ~90% input cost across a session | `ANTHROPIC_API_KEY` set |
+| Groq | `llama-3.3-70b-versatile` | Free tier; fastest; good for graders | `GROQ_API_KEY` set |
+| OpenAI | `gpt-4o-mini` | Cheap fallback | `OPENAI_API_KEY` set |
+| Stub | — | Deterministic placeholders so routing + state-shape tests pass without any key | nothing set |
+
+Override at runtime with `LLM_PROVIDER=anthropic|groq|openai|stub`. Disable prompt caching with `ENABLE_PROMPT_CACHING=false`.
+
+## Observability
+
+Always-on local trace log at `logs/runs.jsonl` — one row per workflow invocation with timing, intents, error, and backend choices. The **📊 Traces** Streamlit page renders it with filters (actor, search backend, emergency-only, errors-only) and a 5-metric summary strip (total / p50 / p95 / error rate / emergency count).
+
+Optional LangSmith integration: set `LANGCHAIN_API_KEY` + `LANGCHAIN_TRACING_V2=true` and every LLM call + LangGraph node auto-traces to https://smith.langchain.com — full flame graphs, free tier covers personal use.
+
 ## Stack
 
 Pinned to the instructor's `requirements.txt` from `Datasets_New/Agentic Healthcare Assistant for Medical Task Automation/`, plus a few additions for resilience:

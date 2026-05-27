@@ -4,8 +4,9 @@ langchain>=0.3.0,<1.0
 langchain-community>=0.3.0,<1.0
 
 # LLM clients (configure one of these via .env)
-langchain-groq>=0.2.0          # cloud, free tier — recommended for graders
-langchain-openai>=0.2.0        # backup
+langchain-anthropic>=0.3.0     # cloud — Claude Sonnet 4.6, default (with prompt caching)
+langchain-groq>=0.2.0          # cloud, free tier — fallback / alternative
+langchain-openai>=0.2.0        # cloud — fallback / alternative
 # langchain-ollama>=0.2.0      # OPTIONAL: uncomment for local Ollama
 
 # RAG: embeddings + vector index

@@ -1,12 +1,15 @@
 """Multi-backend LLM client with a deterministic stub fallback.
 
-Why a stub backend? The graph must be testable without any API key.
-The stub returns plausible but deterministic outputs so:
-- the graph compiles and routes correctly,
-- nodes downstream of an LLM call don't see None,
-- the composer produces a sensible (if templated) response.
+Provider priority: Anthropic (Claude Sonnet 4.6, default) → Groq → OpenAI →
+Stub. The stub fallback is there so the graph compiles and routes correctly
+without any API key — useful for CI, offline development, and the
+"plumbing-grades-clean" stance of the Tier 1 eval.
 
-Real LLM use is the default when GROQ_API_KEY or OPENAI_API_KEY is set.
+Prompt caching: when the Anthropic provider is in use AND the configured
+system prompt is non-trivial (>= 1024 tokens, the Anthropic caching floor),
+we tag it with `cache_control={"type": "ephemeral"}` so repeated calls
+during a session reuse the prompt at ~10% input cost. Short prompts are
+not flagged — below the floor, the API returns an error.
 """
 from __future__ import annotations
 
@@ -43,7 +46,23 @@ def _get_client():
     settings = _get_settings()
     provider = settings.llm_provider
 
-    if provider == "groq":
+    if provider == "anthropic":
+        try:
+            from langchain_anthropic import ChatAnthropic
+            _client = ChatAnthropic(
+                api_key=settings.anthropic_api_key,
+                model_name=settings.llm_model,
+                temperature=0.0,
+                max_tokens=512,
+            )
+            logger.info("LLM provider: Anthropic (%s)", settings.llm_model)
+        except ImportError as exc:
+            raise LLMUnavailable(
+                f"langchain_anthropic not installed: {exc}. "
+                "Install with: pip install langchain-anthropic"
+            ) from exc
+
+    elif provider == "groq":
         try:
             from langchain_groq import ChatGroq
             _client = ChatGroq(
@@ -77,16 +96,52 @@ def _get_client():
     return _client
 
 
-def chat(messages: list[dict], temperature: float = 0.0, max_tokens: int = 512) -> str:
-    """Send a chat completion. `messages` is OpenAI-style [{role, content}, ...]."""
-    client = _get_client()
+# Anthropic's prompt-caching minimum: a cache block must be at least 1024
+# input tokens (~3-4k chars) — below that the API rejects cache_control.
+# We approximate by char length to avoid pulling a tokenizer.
+_ANTHROPIC_CACHE_FLOOR_CHARS = 3500
 
-    if client == "stub":
-        return _stub_response(messages)
 
-    # langchain_groq / langchain_openai: convert dicts to LangChain message objects.
+def _to_anthropic_messages(messages: list[dict]) -> list:
+    """Convert OpenAI-shape dicts to LangChain messages with cache_control on
+    the system prompt when it's long enough to qualify for Anthropic's
+    prompt caching minimum.
+
+    Caching is signaled via a `cache_control={"type": "ephemeral"}` block
+    inside a structured content array. Anthropic returns cache_creation /
+    cache_read tokens in usage metadata so you can see hits on subsequent
+    calls in the same 5-minute window.
+    """
     from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+    settings = _get_settings()
 
+    out = []
+    for m in messages:
+        role = m["role"]
+        text = m["content"]
+        if role == "system":
+            if (settings.enable_prompt_caching
+                    and len(text) >= _ANTHROPIC_CACHE_FLOOR_CHARS):
+                # Structured-content shape with ephemeral cache_control.
+                out.append(SystemMessage(content=[{
+                    "type": "text",
+                    "text": text,
+                    "cache_control": {"type": "ephemeral"},
+                }]))
+            else:
+                out.append(SystemMessage(content=text))
+        elif role in ("user", "human"):
+            out.append(HumanMessage(content=text))
+        elif role in ("assistant", "ai"):
+            out.append(AIMessage(content=text))
+        else:
+            out.append(HumanMessage(content=text))
+    return out
+
+
+def _to_lc_messages(messages: list[dict]) -> list:
+    """Plain LangChain message conversion for non-Anthropic providers."""
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
     role_map = {
         "system": SystemMessage,
         "user": HumanMessage,
@@ -94,10 +149,21 @@ def chat(messages: list[dict], temperature: float = 0.0, max_tokens: int = 512) 
         "assistant": AIMessage,
         "ai": AIMessage,
     }
-    lc_messages = []
-    for m in messages:
-        cls = role_map.get(m["role"], HumanMessage)
-        lc_messages.append(cls(content=m["content"]))
+    return [role_map.get(m["role"], HumanMessage)(content=m["content"]) for m in messages]
+
+
+def chat(messages: list[dict], temperature: float = 0.0, max_tokens: int = 512) -> str:
+    """Send a chat completion. `messages` is OpenAI-style [{role, content}, ...]."""
+    client = _get_client()
+
+    if client == "stub":
+        return _stub_response(messages)
+
+    settings = _get_settings()
+    if settings.llm_provider == "anthropic":
+        lc_messages = _to_anthropic_messages(messages)
+    else:
+        lc_messages = _to_lc_messages(messages)
 
     try:
         result = client.invoke(lc_messages)
@@ -145,13 +211,15 @@ def _stub_response(messages: list[dict]) -> str:
     if "summari" in sys_lower or "summary" in sys_lower:
         return (
             "Stub summary: patient context is available in the EHR records. "
-            "Configure GROQ_API_KEY or OPENAI_API_KEY for real summaries."
+            "Configure ANTHROPIC_API_KEY (recommended), GROQ_API_KEY, or "
+            "OPENAI_API_KEY for real summaries."
         )
 
     # Composition / final response
     if "compose" in sys_lower or "respond" in sys_lower or "assistant" in sys_lower:
         return (
-            "[STUB MODE — set GROQ_API_KEY or OPENAI_API_KEY in .env for real responses]\n"
+            "[STUB MODE — set ANTHROPIC_API_KEY (recommended), GROQ_API_KEY, "
+            "or OPENAI_API_KEY in .env for real responses]\n"
             f"Acknowledged: {user[:200]}"
         )
 
