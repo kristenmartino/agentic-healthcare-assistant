@@ -23,6 +23,12 @@ data/audit.sqlite
 data/appointments.sqlite
 data/fhir_fixtures/patients_writes.json
 eval/results_*.json
+eval/adversarial_results_*.json
 eval/llm_judge_*.json
 screenshots/*.png
 WRITEUP.pdf
+
+# The Next.js frontend ships separately on Vercel; don't ship its node_modules
+# into the FastAPI image.
+web/
+logs/

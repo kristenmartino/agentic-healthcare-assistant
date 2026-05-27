@@ -23,13 +23,16 @@ App at http://localhost:3000.
 ## Deploy
 
 ```bash
-# Backend on Fly.io (one-time)
+# Backend on Fly.io (one-time) — run from REPO ROOT, not web/
 flyctl auth login
-flyctl launch --no-deploy --config api/fly.toml --dockerfile api/Dockerfile
-flyctl secrets set ANTHROPIC_API_KEY=sk-ant-... TAVILY_API_KEY=tvly-...
-flyctl secrets set EHR_BACKEND=fhir_fixture ENABLE_PERSISTENCE=false
-flyctl secrets set CORS_ALLOW_ORIGINS=https://<your-vercel-domain>
-flyctl deploy --config api/fly.toml --dockerfile api/Dockerfile
+flyctl launch --no-deploy --copy-config --name agentic-healthcare-api
+flyctl secrets set \
+  ANTHROPIC_API_KEY=sk-ant-... \
+  TAVILY_API_KEY=tvly-... \
+  EHR_BACKEND=fhir_fixture \
+  ENABLE_PERSISTENCE=false \
+  CORS_ALLOW_ORIGINS=https://agentic-healthcare.kristenmartino.ai
+flyctl deploy
 
 # Frontend on Vercel
 # 1. "Import Project" → kristenmartino/agentic-healthcare-assistant
