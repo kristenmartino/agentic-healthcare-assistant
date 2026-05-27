@@ -78,6 +78,12 @@ class HealthcareState(TypedDict, total=False):
     requested_specialty: Specialty | None
     requested_date: str | None          # ISO date string if extracted
 
+    # PHI access scope. Used by the agent_loop dispatcher to gate tools.
+    # Default is patient_chat (most restrictive). The Streamlit Doctor View
+    # / MCP paths can pass role="clinician" or "admin" to unlock broader
+    # tools like list_patients and unfiltered get_audit_log.
+    role: str | None
+
     # Intent routing
     intent: Intent                         # primary intent
     intents: Annotated[list[Intent], add]  # multi-intent (parallel fan-out)

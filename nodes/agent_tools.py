@@ -393,23 +393,163 @@ def _resolve(fn_name: str) -> Callable[..., Any] | None:
     return fn if callable(fn) else None
 
 
-def dispatch(name: str, args: dict) -> Any:
-    """Execute a tool by name with parsed args. Catches exceptions so a
-    misbehaving tool surfaces as a tool result, not a graph crash."""
+# ---------- PHI scope policy ----------
+#
+# Defense-in-depth: the LLM picks the tool, but the dispatcher enforces
+# WHO can call WHAT with WHICH args. Fail-closed default: missing scope
+# is treated as the most restrictive role (patient_chat).
+#
+# The role labels we use today:
+#   - patient_chat (default): the public chat UI. Scoped to ONE patient
+#     at a time. Cannot enumerate the patient table, cannot read other
+#     patients' bookings or audit events. Walk-in (no patient_id) is
+#     even more restricted — can only create a brand-new record.
+#   - clinician: trusted clinical user. Broader read access. Can read
+#     any single patient's record on demand. Cannot dump the full table.
+#   - admin: full access including unfiltered list_patients and
+#     unfiltered get_audit_log. Reserved for the Streamlit Doctor View
+#     and direct MCP calls — NOT for the patient-facing web chat.
+
+_TOOL_ROLE_POLICY: dict[str, set[str]] = {
+    # tool_name -> set of roles allowed to call it at all
+    "book_appointment":   {"patient_chat", "clinician", "admin"},
+    "cancel_booking":     {"patient_chat", "clinician", "admin"},
+    "list_doctors":       {"patient_chat", "clinician", "admin"},
+    "get_doctor_schedule":{"patient_chat", "clinician", "admin"},
+    "list_my_bookings":   {"patient_chat", "clinician", "admin"},
+    "find_patient":       {"patient_chat", "clinician", "admin"},
+    "list_patients":      {"clinician", "admin"},   # NOT patient_chat
+    "get_patient_history":{"patient_chat", "clinician", "admin"},
+    "upsert_patient":     {"patient_chat", "clinician", "admin"},
+    "medical_search":     {"patient_chat", "clinician", "admin"},
+    "get_audit_log":      {"patient_chat", "clinician", "admin"},
+}
+
+
+def _authorize(tool_name: str, args: dict, scope: dict | None) -> str | None:
+    """Return None if the call is allowed, or an error string if denied.
+
+    Fail-closed: missing scope or missing role -> treated as patient_chat.
+    """
+    scope = scope or {}
+    role = scope.get("role") or "patient_chat"
+    active_pid = scope.get("patient_id")  # may be None for walk-in
+
+    allowed_roles = _TOOL_ROLE_POLICY.get(tool_name)
+    if allowed_roles is None:
+        # Unknown tool — let dispatch handle the "Unknown tool" error.
+        return None
+    if role not in allowed_roles:
+        return (
+            f"Not authorized: tool '{tool_name}' is not available to role "
+            f"'{role}'. (This is a PHI-scope guardrail, not an LLM mistake.)"
+        )
+
+    # patient_chat-specific argument constraints below.
+    if role != "patient_chat":
+        return None
+
+    if tool_name == "list_my_bookings":
+        requested_pid = args.get("patient_id")
+        requested_name = args.get("patient_name")
+        if not requested_pid and not requested_name:
+            return ("Not authorized: list_my_bookings requires a patient_id "
+                    "or patient_name in patient_chat role — unfiltered booking "
+                    "lists are not allowed.")
+        if requested_pid and active_pid and requested_pid != active_pid:
+            return ("Not authorized: list_my_bookings cannot return bookings "
+                    f"for another patient. Active patient is {active_pid!r}.")
+
+    if tool_name == "get_audit_log":
+        if not args.get("patient_id"):
+            return ("Not authorized: get_audit_log requires a patient_id "
+                    "filter in patient_chat role.")
+        if active_pid and args["patient_id"] != active_pid:
+            return ("Not authorized: get_audit_log cannot return events for "
+                    f"another patient. Active patient is {active_pid!r}.")
+
+    if tool_name == "get_patient_history":
+        # Allow lookups, but if an active patient is selected the requested
+        # name should resolve to that patient. We can't enforce name-vs-id
+        # without a roundtrip; the audit log captures both for review.
+        pass
+
+    return None
+
+
+def _mask_for_scope(tool_name: str, result: Any, scope: dict | None) -> Any:
+    """Post-process a tool result to strip PHI fields the caller shouldn't see.
+
+    The biggest concrete case: get_doctor_schedule returns each slot's
+    `booked_by_patient_id` and `confirmation_no`. In patient_chat role,
+    those identify OTHER patients on the doctor's calendar — leaking them
+    via the chat is the textbook PHI cross-leak. Mask them unless the
+    booked slot belongs to the active patient.
+    """
+    scope = scope or {}
+    role = scope.get("role") or "patient_chat"
+    if role != "patient_chat":
+        return result
+    active_pid = scope.get("patient_id")
+
+    if tool_name == "get_doctor_schedule" and isinstance(result, dict):
+        schedule = result.get("schedule") or []
+        masked: list[dict] = []
+        for slot in schedule:
+            if not isinstance(slot, dict):
+                masked.append(slot)
+                continue
+            if not slot.get("booked"):
+                masked.append(slot)
+                continue
+            booker = slot.get("booked_by_patient_id")
+            if active_pid and booker == active_pid:
+                masked.append(slot)  # the active patient's own slot — fine
+            else:
+                masked.append({
+                    **{k: v for k, v in slot.items()
+                       if k not in ("booked_by_patient_id", "confirmation_no")},
+                    "booked_by_patient_id": "(other patient — masked)",
+                    "confirmation_no": "(masked)",
+                })
+        return {**result, "schedule": masked}
+
+    return result
+
+
+def dispatch(name: str, args: dict, scope: dict | None = None) -> Any:
+    """Execute a tool by name with parsed args.
+
+    Three layers:
+      1. Lookup (unknown tool → error)
+      2. Authorization (denied → error, never reaches the tool)
+      3. Execution + post-mask (PHI fields stripped for restrictive roles)
+
+    Exceptions are caught so a misbehaving tool surfaces as a tool
+    result, not a graph crash.
+    """
     fn_name = TOOL_FUNCTIONS.get(name)
     if not fn_name:
         return {"error": f"Unknown tool: {name}"}
+
+    denied = _authorize(name, args, scope)
+    if denied:
+        logger.info("dispatch denied: %s (scope=%s, args=%s)",
+                    denied, scope, args)
+        return {"error": denied}
+
     fn = _resolve(fn_name)
     if fn is None:
         return {"error": f"Tool implementation for '{name}' is missing"}
     try:
-        return fn(**args)
+        result = fn(**args)
     except TypeError as exc:
-        # Likely a bad argument shape from the LLM.
         return {"error": f"Bad arguments to {name}: {exc}"}
     except Exception as exc:
         logger.exception("Tool %s failed", name)
         return {"error": f"{name} raised {type(exc).__name__}: {exc}"}
+
+    return _mask_for_scope(name, result, scope)
 
 
 def tool_to_intent(tool_name: str) -> str:

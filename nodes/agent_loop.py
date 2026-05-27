@@ -284,6 +284,17 @@ def agent_loop_node(state: HealthcareState) -> dict:
     # that the UI panels, eval, and audit log all read).
     artifacts: dict[str, Any] = {}
 
+    # PHI scope passed into the dispatcher on every tool call. Fail-closed
+    # default is patient_chat — the most restrictive role. The Streamlit
+    # Doctor View / MCP paths can override by passing role="clinician" or
+    # "admin" in state when they invoke the workflow.
+    scope: dict[str, Any] = {
+        "actor": "agent",
+        "role": state.get("role") or "patient_chat",
+        "patient_id": state.get("patient_id"),
+        "patient_name": state.get("patient_name"),
+    }
+
     for turn in range(_MAX_TURNS):
         try:
             response = client.invoke(messages)
@@ -325,7 +336,7 @@ def agent_loop_node(state: HealthcareState) -> dict:
             args = call["args"]
             logger.info("agent_loop turn=%d → %s(%s)", turn, name,
                         json.dumps(args, default=str)[:120])
-            result = dispatch(name, args)
+            result = dispatch(name, args, scope=scope)
             intents_seen.add(tool_to_intent(name))
             _accumulate_state(artifacts, name, args, result)
             tool_log.append({
