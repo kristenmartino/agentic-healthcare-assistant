@@ -293,9 +293,15 @@ def dry_run() -> int:
     a = tool_book_appointment("Test Patient", "general_practice")
     print(f"  confirmation_no={a.get('confirmation_no')}, doctor={a.get('doctor_name')}")
 
+    print("\n[6] tool_get_audit_log(limit=3)")
+    events = tool_get_audit_log(limit=3)
+    print(f"  events_returned={len(events)}, "
+          f"first_action={events[0].get('action') if events else '—'}")
+
     print("\n" + "=" * 60)
-    print(" Dry-run complete. All tools callable without MCP runtime.")
+    print(" Dry-run complete. All 8 tools callable without MCP runtime.")
     print(" To run as a real MCP server, install mcp: pip install 'mcp[cli]'")
+    print(" See mcp_server/CLAUDE_DESKTOP_SETUP.md for the client config.")
     print("=" * 60)
     return 0
 
