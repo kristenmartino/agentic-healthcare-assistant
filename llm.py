@@ -37,6 +37,39 @@ def _get_settings() -> Settings:
     return _settings
 
 
+def build_anthropic_client(
+    *, temperature: float = 0.2, max_tokens: int = 1024, timeout: float = 30,
+):
+    """Build a fresh ChatAnthropic client for callers (like the agent_loop)
+    that need a separate instance with their own temperature / max_tokens.
+
+    Centralized here so the API key + model name + import-error path are
+    in one place — agent_loop shouldn't have to know which env var holds
+    the key. The cached `_get_client()` above is for the single-turn
+    `chat()` path; this factory is for streaming / tool-use callers.
+    """
+    settings = _get_settings()
+    if settings.llm_provider != "anthropic":
+        raise LLMUnavailable(
+            f"build_anthropic_client called but the active provider is "
+            f"{settings.llm_provider!r}. Set ANTHROPIC_API_KEY."
+        )
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError as exc:
+        raise LLMUnavailable(
+            f"langchain_anthropic not installed: {exc}. "
+            "Install with: pip install langchain-anthropic"
+        ) from exc
+    return ChatAnthropic(
+        api_key=settings.anthropic_api_key,
+        model_name=settings.llm_model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+
+
 def _get_client():
     """Return a cached client for the configured provider, or None for stub."""
     global _client
@@ -100,6 +133,32 @@ def _get_client():
 # input tokens (~3-4k chars) — below that the API rejects cache_control.
 # We approximate by char length to avoid pulling a tokenizer.
 _ANTHROPIC_CACHE_FLOOR_CHARS = 3500
+
+
+def system_message_with_cache_control(text: str):
+    """Build a LangChain SystemMessage with Anthropic prompt-caching
+    cache_control=ephemeral when the prompt is long enough to qualify
+    for Anthropic's 1024-token floor.
+
+    Used by callers (like the agent_loop) that build raw LangChain
+    messages directly instead of going through the OpenAI-shape dict
+    path in `chat()`. Both paths now apply the same cache_control rule.
+
+    Short prompts stay as plain strings — the API rejects cache_control
+    below the floor. As prompts grow past the floor, caching activates
+    automatically.
+    """
+    from langchain_core.messages import SystemMessage
+    settings = _get_settings()
+    if (settings.llm_provider == "anthropic"
+            and settings.enable_prompt_caching
+            and len(text) >= _ANTHROPIC_CACHE_FLOOR_CHARS):
+        return SystemMessage(content=[{
+            "type": "text",
+            "text": text,
+            "cache_control": {"type": "ephemeral"},
+        }])
+    return SystemMessage(content=text)
 
 
 def _to_anthropic_messages(messages: list[dict]) -> list:

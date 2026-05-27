@@ -10,11 +10,15 @@ import { Card } from "@/components/ui/card";
 import { cn, formatAppointmentTime } from "@/lib/utils";
 import type { ChatMessage } from "@/lib/store";
 
+// Keep in sync with state.Intent on the backend. `schedule` and `audit`
+// are agent_loop-mode-only (the classifier graph never emits them).
 const intentBadgeVariant: Record<string, "default" | "secondary" | "warning" | "destructive" | "success"> = {
   booking: "default",
   records: "secondary",
   history: "secondary",
   medical_search: "secondary",
+  schedule: "default",
+  audit: "warning",
   general: "secondary",
   emergency: "destructive",
 };
@@ -119,12 +123,21 @@ function AssistantArtifacts({ state }: { state: NonNullable<ChatMessage["state"]
 
   if (state.appointment) {
     const a = state.appointment;
+    const cancelled = a.action === "cancelled";
     items.push(
       <ArtifactRow
         key="appointment"
         icon={<CalendarCheck className="h-3.5 w-3.5" />}
-        label={`Booked ${a.doctor_name} (${a.specialty.replace("_", " ")})`}
-        meta={`${formatAppointmentTime(a.start_time)} · ${a.confirmation_no}`}
+        label={
+          cancelled
+            ? `Cancelled appointment (slot ${a.slot_id})`
+            : `Booked ${a.doctor_name} (${a.specialty?.replace("_", " ")})`
+        }
+        meta={
+          cancelled
+            ? a.confirmation_no
+            : `${formatAppointmentTime(a.start_time)} · ${a.confirmation_no}`
+        }
       />,
     );
   }
@@ -136,6 +149,47 @@ function AssistantArtifacts({ state }: { state: NonNullable<ChatMessage["state"]
         icon={<FileText className="h-3.5 w-3.5" />}
         label={`Record ${state.record_change.operation}d`}
         meta={state.record_change.patient_id}
+      />,
+    );
+  }
+
+  // Agent-mode-only structured artifacts. Rendered as a single summary
+  // row each — the detailed JSON lives in the tool_log if reviewers want it.
+  if (state.schedule_results?.schedule) {
+    const open = state.schedule_results.schedule.filter(
+      (s) => !(s as { booked?: number | boolean }).booked,
+    ).length;
+    const total = state.schedule_results.schedule.length;
+    const doctor =
+      (state.schedule_results.doctor as { name?: string })?.name ?? "Doctor";
+    items.push(
+      <ArtifactRow
+        key="schedule"
+        icon={<CalendarCheck className="h-3.5 w-3.5" />}
+        label={`${doctor}'s schedule`}
+        meta={`${open} open / ${total} total slots`}
+      />,
+    );
+  }
+
+  if (state.bookings_results?.length) {
+    items.push(
+      <ArtifactRow
+        key="bookings"
+        icon={<CalendarCheck className="h-3.5 w-3.5" />}
+        label="Upcoming appointments"
+        meta={`${state.bookings_results.length} booking(s)`}
+      />,
+    );
+  }
+
+  if (state.audit_results?.length) {
+    items.push(
+      <ArtifactRow
+        key="audit"
+        icon={<FileText className="h-3.5 w-3.5" />}
+        label="Audit events"
+        meta={`${state.audit_results.length} PHI access event(s)`}
       />,
     );
   }

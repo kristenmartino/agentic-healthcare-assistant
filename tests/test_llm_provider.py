@@ -148,6 +148,73 @@ def test_non_anthropic_path_never_uses_cache_control(monkeypatch):
     assert isinstance(msgs[0].content, str)
 
 
+def test_system_message_helper_caches_long_anthropic_prompt(monkeypatch):
+    """The helper used by agent_loop should wrap long prompts in the
+    structured-content shape with cache_control=ephemeral when Anthropic
+    is the active provider — same rule as the chat() path's conversion."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anth")
+    import config
+    import llm
+    importlib.reload(config)
+    importlib.reload(llm)
+    msg = llm.system_message_with_cache_control(LONG_SYSTEM)
+    assert isinstance(msg.content, list)
+    assert msg.content[0]["type"] == "text"
+    assert msg.content[0]["text"] == LONG_SYSTEM
+    assert msg.content[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_system_message_helper_skips_short_prompts(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anth")
+    import config
+    import llm
+    importlib.reload(config)
+    importlib.reload(llm)
+    short = "You are an agent."
+    msg = llm.system_message_with_cache_control(short)
+    assert msg.content == short
+
+
+def test_system_message_helper_skips_non_anthropic(monkeypatch):
+    """Cache_control is Anthropic-specific — other providers must get the
+    plain string form."""
+    monkeypatch.setenv("GROQ_API_KEY", "grq")
+    import config
+    import llm
+    importlib.reload(config)
+    importlib.reload(llm)
+    msg = llm.system_message_with_cache_control(LONG_SYSTEM)
+    assert msg.content == LONG_SYSTEM
+
+
+def test_agent_loop_system_message_uses_cache_control(monkeypatch):
+    """agent_loop must apply cache_control to its system prompt — that's
+    the point of the helper. We inspect the messages it would send rather
+    than running a full turn (which would need a real Anthropic key)."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anth")
+    import config
+    import llm
+    importlib.reload(config)
+    importlib.reload(llm)
+    # Reload agent_loop so it picks up the freshly-reloaded llm module
+    # (the helper is imported lazily inside agent_loop_node, but reloading
+    # is the safe belt-and-braces move).
+    import nodes.agent_loop as agent_loop
+    importlib.reload(agent_loop)
+    # The module-level _SYSTEM_PROMPT must clear the cache floor — if it
+    # doesn't, the helper would silently fall back to a plain string and
+    # we'd ship without caching.
+    assert len(agent_loop._SYSTEM_PROMPT) >= llm._ANTHROPIC_CACHE_FLOOR_CHARS, (
+        f"agent_loop _SYSTEM_PROMPT is only "
+        f"{len(agent_loop._SYSTEM_PROMPT)} chars; cache floor is "
+        f"{llm._ANTHROPIC_CACHE_FLOOR_CHARS}. Either lengthen the prompt "
+        "or accept that agent_loop won't benefit from prompt caching."
+    )
+    msg = llm.system_message_with_cache_control(agent_loop._SYSTEM_PROMPT)
+    assert isinstance(msg.content, list)
+    assert msg.content[0]["cache_control"] == {"type": "ephemeral"}
+
+
 def test_chat_uses_stub_when_no_keys(monkeypatch):
     """End-to-end: chat() returns a deterministic placeholder when nothing
     is configured. Critical for CI runs and offline development."""

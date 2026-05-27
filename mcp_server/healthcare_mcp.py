@@ -95,7 +95,11 @@ def tool_book_appointment(
     s = _build_settings()
     # Look up patient_id from the EHR; fall back to a synthetic walk-in ID.
     patient = find_patient_by_name(patient_name, s, actor="mcp")
-    patient_id = patient["patient_id"] if patient else f"walkin-{abs(hash(patient_name)) % 10**8:08d}"
+    # Walk-in fallback ID — sha1 prefix instead of Python's per-process-
+    # salted hash() so the id is stable across MCP server restarts.
+    import hashlib
+    walkin_id = "walkin-" + hashlib.sha1(patient_name.encode("utf-8")).hexdigest()[:8]
+    patient_id = patient["patient_id"] if patient else walkin_id
     appointment = _book(
         s.appointments_db_path,
         patient_id=patient_id,

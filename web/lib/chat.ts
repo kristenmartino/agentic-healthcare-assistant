@@ -23,11 +23,16 @@ export type DoneEvent = {
   intents?: string[] | null;
   is_emergency?: boolean;
   emergency_categories?: string[] | null;
-  appointment?: Booking | null;
+  appointment?: (Booking & { action?: string }) | null;
   record_change?: { operation: string; patient_id: string; after?: Record<string, unknown> } | null;
   history_summary?: string | null;
   medical_info?: ({ synthesis?: string } & Record<string, unknown>)[] | null;
   sources?: { index: number; title: string; url: string; source: string }[] | null;
+  // Agent-mode-only structured artifacts (react path; classifier graph leaves null)
+  schedule_results?: { doctor: Record<string, unknown>; schedule: Record<string, unknown>[] } | null;
+  bookings_results?: Record<string, unknown>[] | null;
+  audit_results?: Record<string, unknown>[] | null;
+  doctor_results?: Record<string, unknown>[] | null;
   tool_log?: Record<string, unknown>[] | null;
   error?: string | null;
 };

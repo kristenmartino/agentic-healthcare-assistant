@@ -1,38 +1,54 @@
 """LangGraph workflow assembly for the Healthcare Assistant.
 
-Layout (parallel mode, the default):
+Two reasoning strategies share the same safety pre-classifier:
 
                                 START
                                   │
                                   ▼
                               safety  ───(is_emergency)──► END
+                                  │  (hardcoded 911 template; LLM never runs)
                                   │
-                                  ▼
-                          classify_intent
-                                  │
-        ┌─────────────────────────┼─────────────────────────┐
-        ▼                         ▼                         ▼
-   booking_node             records_node            medical_search_node
-   history_node             (CRUD on EHR)            (Tavily/DDG → MedlinePlus,
-   (LLM summarize                                     WHO, CDC, Mayo)
-    + FAISS lookup)
-        │                         │                         │
-        └─────────────────────────┼─────────────────────────┘
-                                  ▼
-                          compose_response
-                                  │
-                                  ▼
-                                 END
+                    ┌─────────────┴─────────────┐
+                    │                           │
+              AGENT_MODE=react              AGENT_MODE=graph  (default)
+              (opt-in; needs Anthropic)         │
+                    │                           ▼
+                    ▼                     classify_intent
+              agent_loop                       │
+        ┌────────── │ ─────────┐  ┌─────┬──────┴─────┬───────────┐
+        │ Claude tool-use      │  ▼     ▼            ▼           ▼
+        │ loop, 11 tools (book │ booking records   history   medical_search
+        │ /cancel/schedule/   │  │     │            │           │
+        │ list/find/history/  │  └─────┴──────┬─────┴───────────┘
+        │ audit/search/...).  │               ▼
+        │ Dispatcher enforces │         compose_response
+        │ PHI scope per role. │               │
+        └─────────────────────┘               │
+                    │                         │
+                    └────────────┬────────────┘
+                                 ▼
+                                END
 
-Multi-intent queries (e.g., "book a nephrologist AND summarize latest treatments")
-fan out into parallel branches that converge on the composer. LangGraph waits
-for all incoming edges before executing a node, so the merge is implicit.
+graph (default): predictable classifier-then-fan-out. Preserves the
+structured-state contract the eval, audit log, and UI artifact panels
+depend on. Multi-intent fan-out runs branches in parallel; LangGraph
+waits for all incoming edges before executing the composer, so the
+merge is implicit.
 
-Single-intent queries take just one branch and converge on compose. The graph
-is the same shape either way; only the conditional edges differ.
+react (opt-in): a single agent_loop node calls Claude with 11 tool
+schemas and lets it pick + compose tools per turn. Closes the
+fixed-intent ceiling — new capabilities ("what's on Dr. X's calendar",
+"cancel that appointment", "who accessed my records") work without
+adding classifier intents. Same structured-state contract: an
+accumulator inside agent_loop maps tool results back into
+appointment / record_change / history_summary / medical_info /
+sources / schedule_results / bookings_results / audit_results /
+doctor_results so every downstream consumer (Streamlit panel,
+FastAPI /chat done event, deterministic eval, Next.js artifact rows)
+keeps working regardless of which strategy ran.
 
-Persistence: SqliteSaver keyed by thread_id (typically a patient_id) keeps
-state across Streamlit reruns.
+Persistence: SqliteSaver keyed by thread_id (typically a patient_id)
+keeps state across Streamlit reruns and shared between both strategies.
 """
 from __future__ import annotations
 
@@ -41,6 +57,7 @@ import logging
 from langgraph.graph import END, START, StateGraph
 
 from config import Settings, load_settings
+from nodes.agent_loop import agent_loop_node, is_agent_mode_active
 from nodes.booking import booking_node
 from nodes.classifier import classify_intent
 from nodes.composer import compose_response_node
@@ -54,14 +71,23 @@ logger = logging.getLogger(__name__)
 
 
 def _route_after_safety(state: HealthcareState) -> str:
-    """Skip all clinical reasoning when the safety node flagged an emergency.
+    """First-fork: emergency → END (skip everything), otherwise pick the
+    reasoning strategy.
 
-    The safety node has already populated `response` with the hardcoded urgent-
-    care template; routing straight to END preserves it as-is. Putting any LLM
-    node in the loop on an emergency risks softening the message, which is
-    the worst possible failure mode for a clinical assistant.
+    `graph` (default): classifier-then-branch fan-out → composer.
+    Predictable, preserves the structured-state contract directly
+    through node outputs, easy to grade on routing eval.
+
+    `react` (opt-in via AGENT_MODE=react; requires Anthropic): single
+    agent_loop node that picks tools dynamically. Adds new capabilities
+    without classifier edits. Fail-closed PHI scope guardrails enforce
+    that patient_chat cannot enumerate the table, read/modify other
+    patients' records, or cancel others' bookings. Experimental until
+    more regression coverage lands.
     """
-    return "compose_response" if not state.get("is_emergency") else "__skip_to_end__"
+    if state.get("is_emergency"):
+        return "__skip_to_end__"
+    return "agent_loop" if is_agent_mode_active() else "classify_intent"
 
 
 def _route_after_classify(state: HealthcareState) -> list[str]:
@@ -96,6 +122,7 @@ def build_workflow(*, settings: Settings | None = None, with_checkpoint: bool = 
     workflow = StateGraph(HealthcareState)
 
     workflow.add_node("safety", safety_node)
+    workflow.add_node("agent_loop", agent_loop_node)
     workflow.add_node("classify_intent", classify_intent)
     workflow.add_node("booking_node", booking_node)
     workflow.add_node("records_node", records_node)
@@ -105,15 +132,23 @@ def build_workflow(*, settings: Settings | None = None, with_checkpoint: bool = 
 
     workflow.add_edge(START, "safety")
 
-    # On emergency, route straight to END — the safety node's hardcoded
-    # response is the deliverable; the composer must not soften it.
+    # Three-way fork after safety:
+    #   - emergency → END (safety has already populated `response`)
+    #   - react mode + anthropic → agent_loop (single node, tool-using)
+    #   - everything else → classifier graph (legacy path)
     workflow.add_conditional_edges(
         "safety",
         _route_after_safety,
-        {"compose_response": "classify_intent", "__skip_to_end__": END},
+        {
+            "agent_loop": "agent_loop",
+            "classify_intent": "classify_intent",
+            "__skip_to_end__": END,
+        },
     )
+    # agent_loop produces its own final response — go straight to END.
+    workflow.add_edge("agent_loop", END)
 
-    # All branch sets — give LangGraph the full target universe
+    # ---- legacy classifier-graph branches ----
     branch_targets = {
         "booking_node": "booking_node",
         "records_node": "records_node",
@@ -127,7 +162,6 @@ def build_workflow(*, settings: Settings | None = None, with_checkpoint: bool = 
         branch_targets,
     )
 
-    # Every branch flows into compose
     for branch in ("booking_node", "records_node", "history_node", "medical_search_node"):
         workflow.add_edge(branch, "compose_response")
 

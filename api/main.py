@@ -306,12 +306,21 @@ async def chat_stream(req: ChatRequest):
                                         accumulated[k] = v
 
                     elif stream_mode == "messages":
-                        # chunk is (AIMessageChunk, metadata)
+                        # chunk is (AIMessageChunk, metadata).
+                        # Accept text tokens from BOTH the legacy composer
+                        # AND the new agent_loop. _content_to_text drops
+                        # tool_use blocks (type != "text"), so the agent's
+                        # intermediate tool args never reach the chat bubble.
+                        # The user does see any brief preamble Claude
+                        # writes before/between tool calls — feels like
+                        # progress, not noise.
                         try:
                             msg, metadata = chunk
                         except (TypeError, ValueError):
                             continue
-                        if metadata.get("langgraph_node") != "compose_response":
+                        if metadata.get("langgraph_node") not in (
+                            "compose_response", "agent_loop",
+                        ):
                             continue
                         token = _content_to_text(getattr(msg, "content", "") or "")
                         if token:
@@ -343,6 +352,11 @@ async def chat_stream(req: ChatRequest):
                     "history_summary": accumulated.get("history_summary"),
                     "medical_info": accumulated.get("medical_info"),
                     "sources": accumulated.get("sources"),
+                    # Agent-mode-only structured fields (populated by react path)
+                    "schedule_results": accumulated.get("schedule_results"),
+                    "bookings_results": accumulated.get("bookings_results"),
+                    "audit_results": accumulated.get("audit_results"),
+                    "doctor_results": accumulated.get("doctor_results"),
                     "tool_log": accumulated.get("tool_log"),
                     "error": accumulated.get("error"),
                 })

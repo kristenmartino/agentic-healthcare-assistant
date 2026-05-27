@@ -241,14 +241,17 @@ with col_main:
                                             accumulated[k] = v
                                 status.update(label=f"Working — {label} done")
                         elif stream_mode == "messages":
-                            # chunk is (AIMessageChunk, metadata-dict). We only
-                            # stream tokens from the composer so the status panel
-                            # doesn't pollute the chat with intent-classifier tokens.
+                            # chunk is (AIMessageChunk, metadata-dict). Stream
+                            # tokens from compose_response AND agent_loop (text
+                            # blocks only — _content_to_text drops tool_use
+                            # blocks, so the agent's tool args never appear).
                             try:
                                 token_msg, metadata = chunk
                             except (TypeError, ValueError):
                                 continue
-                            if metadata.get("langgraph_node") != "compose_response":
+                            if metadata.get("langgraph_node") not in (
+                                "compose_response", "agent_loop",
+                            ):
                                 continue
                             token = getattr(token_msg, "content", "") or ""
                             if not isinstance(token, str):
@@ -327,13 +330,37 @@ with col_side:
 
         appt = last_state.get("appointment")
         if appt:
-            st.subheader("Appointment")
+            label = "Appointment cancelled" if appt.get("action") == "cancelled" else "Appointment"
+            st.subheader(label)
             st.json(appt)
 
         rec = last_state.get("record_change")
         if rec:
             st.subheader("Record change")
             st.json(rec)
+
+        # Agent-mode-only structured artifacts.
+        schedule = last_state.get("schedule_results")
+        if schedule:
+            doctor_name = (schedule.get("doctor") or {}).get("name", "Doctor")
+            st.subheader(f"{doctor_name}'s schedule")
+            slots = schedule.get("schedule") or []
+            open_count = sum(1 for s in slots if not s.get("booked"))
+            st.caption(f"{open_count} open / {len(slots)} total slots")
+            with st.expander("Slots", expanded=False):
+                st.json(slots)
+
+        bookings = last_state.get("bookings_results")
+        if bookings:
+            st.subheader("Upcoming appointments")
+            st.caption(f"{len(bookings)} booking(s)")
+            st.json(bookings)
+
+        audit = last_state.get("audit_results")
+        if audit:
+            st.subheader("Audit events")
+            st.caption(f"{len(audit)} PHI access event(s)")
+            st.json(audit)
 
         hist = last_state.get("history_summary")
         if hist:
