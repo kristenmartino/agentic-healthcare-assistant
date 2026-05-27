@@ -49,12 +49,25 @@ def test_missing_scope_treated_as_patient_chat():
 
 # ---------- list_my_bookings: requires patient_id filter ----------
 
-def test_unfiltered_list_my_bookings_denied_for_patient_chat():
+def test_list_my_bookings_auto_scopes_to_active_patient(monkeypatch):
+    """The agent prompt tells Claude not to pass patient_id (it's
+    auto-scoped). The dispatcher must inject scope.patient_id into args
+    when patient_chat has an active patient and the call came in empty —
+    otherwise prompt and dispatcher contradict each other and 'show my
+    bookings' fails."""
+    seen: dict = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(agent_tools, "_tool_list_my_bookings", _capture)
     result = agent_tools.dispatch(
         "list_my_bookings", {},
         scope={"role": "patient_chat", "patient_id": "fhir:active"},
     )
-    assert "Not authorized" in (result.get("error") or "")
+    assert result == []
+    assert seen.get("patient_id") == "fhir:active"
 
 
 def test_list_my_bookings_with_active_patient_id_allowed(monkeypatch):
@@ -75,6 +88,56 @@ def test_list_my_bookings_for_other_patient_denied():
     )
     err = result.get("error") or ""
     assert "another patient" in err or "Not authorized" in err
+
+
+def test_list_my_bookings_by_patient_name_denied_for_other_patient(monkeypatch):
+    """patient_name is an alternative to patient_id; it must be resolved
+    in pre-auth and rejected when it points at a different patient."""
+    monkeypatch.setattr(
+        "tools.ehr.find_patient_by_name",
+        lambda name, settings, actor=None: {"patient_id": "fhir:david-thompson",
+                                            "name": "David Thompson"}
+        if "david" in name.lower() else None,
+    )
+    result = agent_tools.dispatch(
+        "list_my_bookings", {"patient_name": "David Thompson"},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    err = result.get("error") or ""
+    assert "Not authorized" in err
+    assert "fhir:david-thompson" in err
+
+
+def test_list_my_bookings_by_patient_name_allowed_for_active_patient(monkeypatch):
+    """patient_name pointing at the active patient is allowed."""
+    monkeypatch.setattr(
+        "tools.ehr.find_patient_by_name",
+        lambda name, settings, actor=None: {"patient_id": "fhir:anjali-mehra",
+                                            "name": "Anjali Mehra"},
+    )
+    monkeypatch.setattr(agent_tools, "_tool_list_my_bookings",
+                        lambda **kwargs: [])
+    result = agent_tools.dispatch(
+        "list_my_bookings", {"patient_name": "Anjali Mehra"},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    assert result == []
+
+
+def test_list_my_bookings_by_patient_name_denied_for_nonexistent_patient(monkeypatch):
+    """Patient-chat can't probe for arbitrary names via list_my_bookings —
+    nonexistent name returns a deny, not a silent empty list."""
+    monkeypatch.setattr(
+        "tools.ehr.find_patient_by_name",
+        lambda name, settings, actor=None: None,
+    )
+    result = agent_tools.dispatch(
+        "list_my_bookings", {"patient_name": "Nonexistent Person"},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    err = result.get("error") or ""
+    assert "Not authorized" in err
+    assert "Nonexistent Person" in err
 
 
 # ---------- get_audit_log: requires patient_id, must match active ----------
@@ -406,6 +469,53 @@ def test_cancel_booking_denied_when_no_active_patient(monkeypatch):
     assert "Not authorized" in (result.get("error") or "")
 
 
+def test_cancel_booking_string_slot_id_checks_ownership(monkeypatch):
+    """slot_id can arrive as a string from the LLM tool-call layer. The
+    pre-auth comparison was using == against the integer booking row, so
+    "99" != 99 silently let the tool run and cancel another patient's
+    slot. Dispatch must normalize to int before the ownership check."""
+    from tools import appointments
+    monkeypatch.setattr(appointments, "list_all_bookings", lambda *a, **kw: [
+        {"slot_id": 99, "booked_by_patient_id": "fhir:other",
+         "confirmation_no": "AGS-X"},
+    ])
+    called = {"tool": 0}
+
+    def _should_not_run(**kw):
+        called["tool"] += 1
+        return {"status": "cancelled"}
+
+    monkeypatch.setattr(agent_tools, "_tool_cancel_booking", _should_not_run)
+    result = agent_tools.dispatch(
+        "cancel_booking", {"slot_id": "99"},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    err = result.get("error") or ""
+    assert "Not authorized" in err
+    assert called["tool"] == 0, (
+        "string slot_id bypassed ownership check — tool ran on another "
+        "patient's slot")
+
+
+def test_cancel_booking_invalid_slot_id_denied(monkeypatch):
+    """A non-integer slot_id should deny cleanly, not raise and not run."""
+    called = {"tool": 0}
+
+    def _should_not_run(**kw):
+        called["tool"] += 1
+        return {"status": "cancelled"}
+
+    monkeypatch.setattr(agent_tools, "_tool_cancel_booking", _should_not_run)
+    result = agent_tools.dispatch(
+        "cancel_booking", {"slot_id": "abc"},
+        scope={"role": "patient_chat", "patient_id": "fhir:active"},
+    )
+    err = result.get("error") or ""
+    assert "Not authorized" in err
+    assert "slot_id" in err
+    assert called["tool"] == 0
+
+
 def test_upsert_patient_denied_when_updating_other_patient(monkeypatch):
     """An existing record for someone else cannot be modified through
     patient_chat, even if the agent claims it's their record."""
@@ -442,6 +552,35 @@ def test_upsert_new_patient_allowed_when_no_existing(monkeypatch):
         scope={"role": "patient_chat", "patient_id": "fhir:active"},
     )
     assert result.get("operation") == "insert"
+
+
+def test_walk_in_upsert_existing_patient_denied_before_tool_runs(monkeypatch):
+    """Walk-in patient_chat (no active patient) must not be able to update
+    an existing record. The dispatcher should deny BEFORE the tool runs —
+    otherwise the underlying EHR layer happily updates the existing row
+    when a walk-in name collides with a known patient."""
+    from tools import ehr
+    monkeypatch.setattr(
+        ehr, "find_patient_by_name",
+        lambda name, settings=None, actor=None: {
+            "patient_id": "fhir:david-thompson", "name": "David Thompson"},
+    )
+    called = {"tool": 0}
+
+    def _should_not_run(**kwargs):
+        called["tool"] += 1
+        return {"operation": "update"}
+
+    monkeypatch.setattr(agent_tools, "_tool_upsert_patient", _should_not_run)
+    result = agent_tools.dispatch(
+        "upsert_patient", {"name": "David Thompson", "summary": "drive-by note"},
+        scope={"role": "patient_chat"},  # no active patient
+    )
+    err = result.get("error") or ""
+    assert "Not authorized" in err
+    assert "walk-in" in err.lower() or "fhir:david-thompson" in err
+    assert called["tool"] == 0, (
+        "walk-in upsert ran against existing record — pre-auth bypassed")
 
 
 def test_upsert_own_record_allowed(monkeypatch):

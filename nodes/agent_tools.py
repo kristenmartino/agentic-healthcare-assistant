@@ -550,13 +550,20 @@ def _authorize(tool_name: str, args: dict, scope: dict | None) -> str | None:
     if tool_name == "list_my_bookings":
         requested_pid = args.get("patient_id")
         requested_name = args.get("patient_name")
+        # Auto-scope already runs in dispatch BEFORE _authorize, so if we get
+        # here with no patient_id and no patient_name, the auto-scope didn't
+        # fire (no active patient OR caller passed empty args from another
+        # role path). Patient_chat without an active patient is already
+        # denied above via _PHI_TOOLS_NEEDING_ACTIVE_PID; the remaining case
+        # would be weird and we reject it.
         if not requested_pid and not requested_name:
-            return ("Not authorized: list_my_bookings requires a patient_id "
-                    "or patient_name in patient_chat role — unfiltered booking "
-                    "lists are not allowed.")
+            return ("Not authorized: list_my_bookings could not be scoped "
+                    "to a patient in patient_chat role.")
         if requested_pid and active_pid and requested_pid != active_pid:
             return ("Not authorized: list_my_bookings cannot return bookings "
                     f"for another patient. Active patient is {active_pid!r}.")
+        # patient_name validation happens in _pre_authorize_resolutions
+        # (needs an EHR lookup to resolve the name → patient_id).
 
     if tool_name == "get_audit_log":
         if not args.get("patient_id"):
@@ -598,19 +605,66 @@ def _pre_authorize_resolutions(
     if role != "patient_chat":
         return None
     active_pid = scope.get("patient_id")
-    if not active_pid:
-        # The args-only _authorize step already covered the "no active
-        # patient" denials. Anything left here is fine to fall through.
-        return None
 
     from config import load_settings
+
+    # upsert_patient runs FIRST and ignores the no-active-pid early return
+    # below: walk-in patient_chat (no active patient) can still try to
+    # upsert, and that path must deny when the requested name resolves to
+    # an existing patient. Without this branch, walk-in upsert silently
+    # falls through and updates somebody else's record.
+    if tool_name == "upsert_patient":
+        requested = args.get("name")
+        if requested:
+            from tools.ehr import find_patient_by_name
+            try:
+                existing = find_patient_by_name(requested, load_settings(),
+                                                actor="agent")
+            except Exception:
+                existing = None
+            if existing and not active_pid:
+                # Walk-in: refuse to touch an existing record.
+                return (
+                    "Not authorized: walk-in patient_chat (no active patient "
+                    f"context) cannot update existing record for {requested!r} "
+                    f"(patient_id {existing.get('patient_id')!r}). Create a "
+                    "new record with a distinct name or sign in as that patient."
+                )
+            if existing and active_pid and existing.get("patient_id") != active_pid:
+                return (
+                    "Not authorized: upsert_patient would update an existing "
+                    f"record for {requested!r} (patient_id "
+                    f"{existing.get('patient_id')!r}) which differs from the "
+                    f"active patient {active_pid!r}."
+                )
+
+    if not active_pid:
+        # Everything below requires an active patient. _authorize already
+        # denied the PHI-tool calls that needed one; remaining no-active-pid
+        # calls (e.g. medical_search, book_appointment for walk-ins) are fine.
+        return None
 
     if tool_name == "cancel_booking":
         from tools.appointments import list_all_bookings
         s = load_settings()
-        slot_id = args.get("slot_id")
+        raw_slot_id = args.get("slot_id")
         conf = args.get("confirmation_no")
-        if not slot_id and not conf:
+        # Normalize slot_id to int BEFORE comparing to booking rows. The
+        # LLM/Anthropic tool-call layer occasionally serializes integers as
+        # strings; comparing "99" to 99 silently fails the ownership check
+        # and lets the tool run, where it does int() conversion itself and
+        # cancels the slot. Normalize once here so both the check and the
+        # tool agree.
+        slot_id: int | None
+        if raw_slot_id is None or raw_slot_id == "":
+            slot_id = None
+        else:
+            try:
+                slot_id = int(raw_slot_id)
+            except (TypeError, ValueError):
+                return (f"Not authorized: cancel_booking received invalid "
+                        f"slot_id={raw_slot_id!r}; must be an integer.")
+        if slot_id is None and not conf:
             # _tool_cancel_booking itself returns a not_found result; let
             # that path handle it.
             return None
@@ -623,7 +677,7 @@ def _pre_authorize_resolutions(
                     "ownership.")
         target = None
         for b in bookings:
-            if slot_id and b.get("slot_id") == slot_id:
+            if slot_id is not None and b.get("slot_id") == slot_id:
                 target = b
                 break
             if conf and b.get("confirmation_no") == conf:
@@ -664,8 +718,12 @@ def _pre_authorize_resolutions(
                 "active patient context."
             )
 
-    if tool_name == "upsert_patient":
-        requested = args.get("name")
+    if tool_name == "list_my_bookings":
+        # The auto-scope step in dispatch covers the no-args path. If
+        # patient_name is provided, it must resolve to the active patient —
+        # otherwise the tool's internal name-resolution would happily filter
+        # to a different patient's bookings.
+        requested = args.get("patient_name")
         if not requested:
             return None
         from tools.ehr import find_patient_by_name
@@ -674,15 +732,17 @@ def _pre_authorize_resolutions(
                                             actor="agent")
         except Exception:
             return None
-        if existing and existing.get("patient_id") != active_pid:
-            # Patient-chat can NOT update an existing record that belongs
-            # to a different patient. (Updating the active patient's own
-            # record is fine; creating a new patient is fine.)
+        if not existing:
             return (
-                "Not authorized: upsert_patient would update an existing "
-                f"record for {requested!r} (patient_id "
-                f"{existing.get('patient_id')!r}) which differs from the "
-                f"active patient {active_pid!r}."
+                f"Not authorized: no patient named {requested!r} found, and "
+                "patient_chat cannot probe arbitrary names through "
+                "list_my_bookings."
+            )
+        if existing.get("patient_id") != active_pid:
+            return (
+                f"Not authorized: list_my_bookings for {requested!r} resolves "
+                f"to {existing.get('patient_id')!r}, which is not the active "
+                f"patient {active_pid!r}."
             )
 
     return None
@@ -728,13 +788,52 @@ def _mask_for_scope(tool_name: str, result: Any, scope: dict | None) -> Any:
     return result
 
 
+def _normalize_args(name: str, args: dict, scope: dict | None) -> dict:
+    """Mutate-free arg normalization that runs BEFORE authorization.
+
+    Today this handles two cases:
+      1. Auto-scope `list_my_bookings` for patient_chat: when an active
+         patient is in scope and the caller didn't pass patient_id or
+         patient_name, inject scope.patient_id so the tool returns the
+         caller's own bookings. The agent prompt promises this behavior;
+         without injection the call would be denied as unscoped.
+      2. Coerce `cancel_booking.slot_id` to int when it arrived as a
+         numeric string. Without normalization the ownership check in
+         _pre_authorize_resolutions compares "99" to 99 and silently
+         fails, letting the tool run and cancel another patient's slot.
+         Invalid strings (e.g. "abc") return the args unchanged — the
+         pre-auth step then returns a clean error.
+
+    Returns a fresh dict; never mutates the caller's args.
+    """
+    scope = scope or {}
+    role = scope.get("role") or "patient_chat"
+
+    if (name == "list_my_bookings" and role == "patient_chat"
+            and scope.get("patient_id")
+            and not args.get("patient_id")
+            and not args.get("patient_name")):
+        return {**args, "patient_id": scope["patient_id"]}
+
+    if name == "cancel_booking" and args.get("slot_id") is not None:
+        try:
+            coerced = int(args["slot_id"])
+        except (TypeError, ValueError):
+            return args  # pre-auth will reject with a precise error
+        if coerced != args["slot_id"]:
+            return {**args, "slot_id": coerced}
+
+    return args
+
+
 def dispatch(name: str, args: dict, scope: dict | None = None) -> Any:
     """Execute a tool by name with parsed args.
 
-    Three layers:
+    Four layers:
       1. Lookup (unknown tool → error)
-      2. Authorization (denied → error, never reaches the tool)
-      3. Execution + post-mask (PHI fields stripped for restrictive roles)
+      2. Arg normalization (auto-scope + type coercion)
+      3. Authorization (denied → error, never reaches the tool)
+      4. Execution + post-mask (PHI fields stripped for restrictive roles)
 
     Exceptions are caught so a misbehaving tool surfaces as a tool
     result, not a graph crash.
@@ -742,6 +841,8 @@ def dispatch(name: str, args: dict, scope: dict | None = None) -> Any:
     fn_name = TOOL_FUNCTIONS.get(name)
     if not fn_name:
         return {"error": f"Unknown tool: {name}"}
+
+    args = _normalize_args(name, args, scope)
 
     denied = (
         _authorize(name, args, scope)
