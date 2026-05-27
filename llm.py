@@ -135,6 +135,32 @@ def _get_client():
 _ANTHROPIC_CACHE_FLOOR_CHARS = 3500
 
 
+def system_message_with_cache_control(text: str):
+    """Build a LangChain SystemMessage with Anthropic prompt-caching
+    cache_control=ephemeral when the prompt is long enough to qualify
+    for Anthropic's 1024-token floor.
+
+    Used by callers (like the agent_loop) that build raw LangChain
+    messages directly instead of going through the OpenAI-shape dict
+    path in `chat()`. Both paths now apply the same cache_control rule.
+
+    Short prompts stay as plain strings — the API rejects cache_control
+    below the floor. As prompts grow past the floor, caching activates
+    automatically.
+    """
+    from langchain_core.messages import SystemMessage
+    settings = _get_settings()
+    if (settings.llm_provider == "anthropic"
+            and settings.enable_prompt_caching
+            and len(text) >= _ANTHROPIC_CACHE_FLOOR_CHARS):
+        return SystemMessage(content=[{
+            "type": "text",
+            "text": text,
+            "cache_control": {"type": "ephemeral"},
+        }])
+    return SystemMessage(content=text)
+
+
 def _to_anthropic_messages(messages: list[dict]) -> list:
     """Convert OpenAI-shape dicts to LangChain messages with cache_control on
     the system prompt when it's long enough to qualify for Anthropic's

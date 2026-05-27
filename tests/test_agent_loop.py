@@ -304,8 +304,15 @@ def test_patient_context_lands_in_system_prompt(monkeypatch):
             "patient_id": "fhir:anjali-mehra",
         })
     system_msg = client.invocations[0][0]
-    assert "Anjali Mehra" in system_msg.content
-    assert "fhir:anjali-mehra" in system_msg.content
+    # Content is a structured list of dicts when cache_control is applied
+    # (Anthropic + long prompt); a plain string otherwise.
+    if isinstance(system_msg.content, list):
+        sys_text = "".join(b.get("text", "") for b in system_msg.content
+                           if isinstance(b, dict))
+    else:
+        sys_text = system_msg.content
+    assert "Anjali Mehra" in sys_text
+    assert "fhir:anjali-mehra" in sys_text
 
 
 # ---------- tool delegation to legacy nodes (fix #7) ----------
