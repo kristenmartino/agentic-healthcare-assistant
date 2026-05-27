@@ -37,6 +37,39 @@ def _get_settings() -> Settings:
     return _settings
 
 
+def build_anthropic_client(
+    *, temperature: float = 0.2, max_tokens: int = 1024, timeout: float = 30,
+):
+    """Build a fresh ChatAnthropic client for callers (like the agent_loop)
+    that need a separate instance with their own temperature / max_tokens.
+
+    Centralized here so the API key + model name + import-error path are
+    in one place — agent_loop shouldn't have to know which env var holds
+    the key. The cached `_get_client()` above is for the single-turn
+    `chat()` path; this factory is for streaming / tool-use callers.
+    """
+    settings = _get_settings()
+    if settings.llm_provider != "anthropic":
+        raise LLMUnavailable(
+            f"build_anthropic_client called but the active provider is "
+            f"{settings.llm_provider!r}. Set ANTHROPIC_API_KEY."
+        )
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError as exc:
+        raise LLMUnavailable(
+            f"langchain_anthropic not installed: {exc}. "
+            "Install with: pip install langchain-anthropic"
+        ) from exc
+    return ChatAnthropic(
+        api_key=settings.anthropic_api_key,
+        model_name=settings.llm_model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+
+
 def _get_client():
     """Return a cached client for the configured provider, or None for stub."""
     global _client

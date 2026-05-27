@@ -1,38 +1,54 @@
 """LangGraph workflow assembly for the Healthcare Assistant.
 
-Layout (parallel mode, the default):
+Two reasoning strategies share the same safety pre-classifier:
 
                                 START
                                   │
                                   ▼
                               safety  ───(is_emergency)──► END
+                                  │  (hardcoded 911 template; LLM never runs)
                                   │
-                                  ▼
-                          classify_intent
-                                  │
-        ┌─────────────────────────┼─────────────────────────┐
-        ▼                         ▼                         ▼
-   booking_node             records_node            medical_search_node
-   history_node             (CRUD on EHR)            (Tavily/DDG → MedlinePlus,
-   (LLM summarize                                     WHO, CDC, Mayo)
-    + FAISS lookup)
-        │                         │                         │
-        └─────────────────────────┼─────────────────────────┘
-                                  ▼
-                          compose_response
-                                  │
-                                  ▼
-                                 END
+                    ┌─────────────┴─────────────┐
+                    │                           │
+              AGENT_MODE=react              AGENT_MODE=graph  (default)
+              (opt-in; needs Anthropic)         │
+                    │                           ▼
+                    ▼                     classify_intent
+              agent_loop                       │
+        ┌────────── │ ─────────┐  ┌─────┬──────┴─────┬───────────┐
+        │ Claude tool-use      │  ▼     ▼            ▼           ▼
+        │ loop, 11 tools (book │ booking records   history   medical_search
+        │ /cancel/schedule/   │  │     │            │           │
+        │ list/find/history/  │  └─────┴──────┬─────┴───────────┘
+        │ audit/search/...).  │               ▼
+        │ Dispatcher enforces │         compose_response
+        │ PHI scope per role. │               │
+        └─────────────────────┘               │
+                    │                         │
+                    └────────────┬────────────┘
+                                 ▼
+                                END
 
-Multi-intent queries (e.g., "book a nephrologist AND summarize latest treatments")
-fan out into parallel branches that converge on the composer. LangGraph waits
-for all incoming edges before executing a node, so the merge is implicit.
+graph (default): predictable classifier-then-fan-out. Preserves the
+structured-state contract the eval, audit log, and UI artifact panels
+depend on. Multi-intent fan-out runs branches in parallel; LangGraph
+waits for all incoming edges before executing the composer, so the
+merge is implicit.
 
-Single-intent queries take just one branch and converge on compose. The graph
-is the same shape either way; only the conditional edges differ.
+react (opt-in): a single agent_loop node calls Claude with 11 tool
+schemas and lets it pick + compose tools per turn. Closes the
+fixed-intent ceiling — new capabilities ("what's on Dr. X's calendar",
+"cancel that appointment", "who accessed my records") work without
+adding classifier intents. Same structured-state contract: an
+accumulator inside agent_loop maps tool results back into
+appointment / record_change / history_summary / medical_info /
+sources / schedule_results / bookings_results / audit_results /
+doctor_results so every downstream consumer (Streamlit panel,
+FastAPI /chat done event, deterministic eval, Next.js artifact rows)
+keeps working regardless of which strategy ran.
 
-Persistence: SqliteSaver keyed by thread_id (typically a patient_id) keeps
-state across Streamlit reruns.
+Persistence: SqliteSaver keyed by thread_id (typically a patient_id)
+keeps state across Streamlit reruns and shared between both strategies.
 """
 from __future__ import annotations
 

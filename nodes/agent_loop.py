@@ -63,8 +63,15 @@ _DISCLAIMER = (
 
 
 def _get_client():
-    """Return a configured ChatAnthropic for streaming tool-use calls."""
+    """Return a configured ChatAnthropic for streaming tool-use calls.
+
+    Delegates to llm.build_anthropic_client so the API key + model name
+    + import-error handling live in one place. The agent uses its own
+    temperature/max_tokens (richer composition than the single-turn
+    classifier calls in llm.chat()).
+    """
     from config import load_settings
+    from llm import LLMUnavailable, build_anthropic_client
     settings = load_settings()
     if settings.llm_provider != "anthropic":
         raise RuntimeError(
@@ -72,18 +79,9 @@ def _get_client():
             "Set ANTHROPIC_API_KEY or use AGENT_MODE=graph."
         )
     try:
-        from langchain_anthropic import ChatAnthropic
-    except ImportError as exc:
-        raise RuntimeError(
-            "langchain-anthropic not installed; pip install langchain-anthropic"
-        ) from exc
-    return ChatAnthropic(
-        api_key=settings.anthropic_api_key,
-        model_name=settings.llm_model,
-        temperature=0.2,
-        max_tokens=1024,
-        timeout=30,
-    )
+        return build_anthropic_client(temperature=0.2, max_tokens=1024, timeout=30)
+    except LLMUnavailable as exc:
+        raise RuntimeError(str(exc)) from exc
 
 
 def _to_text(content: Any) -> str:

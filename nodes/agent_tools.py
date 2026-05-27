@@ -32,6 +32,8 @@ def _tool_book_appointment(
     preferred_date: str | None = None,
 ) -> dict:
     """Book the earliest available slot."""
+    import hashlib
+
     from config import load_settings
     from tools.appointments import book_appointment
     from tools.audit import log_access
@@ -39,7 +41,12 @@ def _tool_book_appointment(
 
     s = load_settings()
     patient = find_patient_by_name(patient_name, s, actor="agent")
-    patient_id = patient["patient_id"] if patient else f"walkin-{abs(hash(patient_name)) % 10**8:08d}"
+    # Walk-in fallback ID. Python's built-in hash() is salted per process
+    # so the same name produces different IDs across restarts; use a
+    # deterministic sha1 prefix instead.
+    walkin_id = "walkin-" + hashlib.sha1(
+        patient_name.encode("utf-8")).hexdigest()[:8]
+    patient_id = patient["patient_id"] if patient else walkin_id
     try:
         appt = book_appointment(
             s.appointments_db_path,
