@@ -6,7 +6,7 @@ A LangGraph-based agentic assistant that classifies user intent, fans out to up 
 
 ## Live demo
 
-▶ **[<!-- Vercel URL after first deploy --> healthcare.kristen.dev](https://healthcare.kristen.dev)** — Next.js 15 + shadcn/ui frontend on Vercel, FastAPI backend on Fly.io. Token-streamed chat, FHIR-grounded patient lookups, PHI audit log, clinical safety triage. See [`web/README.md`](web/README.md).
+▶ **[agentic-healthcare.kristenmartino.ai](https://agentic-healthcare.kristenmartino.ai)** — Next.js 15 + shadcn/ui frontend on Vercel, FastAPI backend on Fly.io. Token-streamed chat, FHIR-grounded patient lookups, PHI audit log, clinical safety triage. See [`web/README.md`](web/README.md).
 
 ▶ **[<!-- Streamlit Cloud URL --> healthcare-assistant.streamlit.app](https://healthcare-assistant.streamlit.app)** — same backend, Streamlit demo. 5-minute deploy via [`DEPLOY.md`](DEPLOY.md).
 

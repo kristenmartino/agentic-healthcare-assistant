@@ -5,10 +5,11 @@
 #     flyctl launch --no-deploy --config api/fly.toml --dockerfile api/Dockerfile
 #     flyctl secrets set ANTHROPIC_API_KEY=sk-ant-... TAVILY_API_KEY=tvly-...
 #     flyctl secrets set EHR_BACKEND=fhir_fixture ENABLE_PERSISTENCE=false
-#     flyctl secrets set CORS_ALLOW_ORIGINS=https://healthcare-assistant.vercel.app
+#     flyctl secrets set CORS_ALLOW_ORIGINS=https://agentic-healthcare.kristenmartino.ai
 #     flyctl deploy --config api/fly.toml --dockerfile api/Dockerfile
 #
 # Pick your own app name (must be unique on Fly); change the `app =` line.
+# Suggestion: agentic-healthcare-api (matches the kristenmartino.ai subdomain).
 
 app = "agentic-healthcare-api"
 primary_region = "iad"   # us-east — closest to Vercel's edge for most traffic
