@@ -218,11 +218,17 @@ def agent_loop_node(state: HealthcareState) -> dict:
 
 
 def is_agent_mode_active() -> bool:
-    """True when AGENT_MODE=react AND Anthropic is the active provider."""
+    """True when AGENT_MODE=react AND Anthropic is the active provider.
+
+    NOTE: default is now `graph` (the legacy classifier path). React mode
+    is opt-in until the structured-state contract, PHI scoping, and
+    conversation-history threading are all in place — see PR review for
+    the followup plan. Set AGENT_MODE=react to opt in.
+    """
     import os
 
     from config import load_settings
-    mode = os.getenv("AGENT_MODE", "react").lower()
+    mode = os.getenv("AGENT_MODE", "graph").lower()
     if mode != "react":
         return False
     return load_settings().llm_provider == "anthropic"
