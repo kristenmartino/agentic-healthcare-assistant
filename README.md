@@ -20,24 +20,36 @@ A LangGraph-based agentic assistant that classifies user intent, fans out to up 
                                 START
                                   │
                                   ▼
-                          classify_intent (LLM + regex fallback)
-                                  │
-        ┌─────────────────────────┼─────────────────────────┐
-        ▼                         ▼                         ▼
-   booking_node             records_node             medical_search_node
-   history_node             (CRUD on EHR)            (Tavily/DDG → MedlinePlus,
-   (LLM summarize                                     WHO, CDC, Mayo)
-    + FAISS lookup)
-        │                         │                         │
-        └─────────────────────────┼─────────────────────────┘
-                                  ▼
-                          compose_response (LLM + template fallback)
+                              safety  ───emergency──► END  (hardcoded 911 template)
                                   │
                                   ▼
-                                 END
+                    ┌─────────────┴──────────────┐
+                    │                            │
+              AGENT_MODE=react              AGENT_MODE=graph  (legacy)
+              (default w/ Claude)                 │
+                    │                            ▼
+                    ▼                      classify_intent  (5-intent LLM router)
+              agent_loop                         │
+        ┌────────── │ ─────────┐    ┌──────┬────┴────┬───────────┐
+        │  Claude tool-use     │    ▼      ▼         ▼           ▼
+        │  loop, 11 tools      │  booking records  history   medical_search
+        │  (book/cancel/sched/ │    │      │         │           │
+        │   list/find/history/ │    └──────┴────┬────┴───────────┘
+        │   audit/search/...)  │                ▼
+        └──────────────────────┘          compose_response (LLM + template fallback)
+                    │                            │
+                    └──────────────┬─────────────┘
+                                   ▼
+                                  END
 ```
 
-For multi-intent queries (e.g., *"My father has CKD; book a nephrologist AND summarize latest treatments"*), the classifier returns both intents and the graph fans out — both branches run in parallel and converge on the composer. LangGraph waits for all incoming edges before executing a node, so the merge is implicit. State fields with multiple writers (`tool_log`, `sources`, `intents`, `error`) use `Annotated[T, reducer]` to avoid the "last write wins" silent-data-loss footgun.
+Two reasoning strategies, gated by `AGENT_MODE`. The safety classifier is shared by both (deterministic regex; never bypassed; emergency queries route directly to END with a hardcoded 911 / 988 template).
+
+**`react` (default when Anthropic is configured)** — a single `agent_loop` node calls Claude with 11 tool schemas (`book_appointment`, `cancel_booking`, `get_doctor_schedule`, `list_my_bookings`, `find_patient`, `list_patients`, `get_patient_history`, `upsert_patient`, `medical_search`, `get_audit_log`, `list_doctors`). Claude picks tools per turn; multi-tool composition is implicit; novel queries like *"what's on Dr. Nair's calendar this week?"* are handled without new classifier intents. Each tool call is audited the same way the legacy nodes are. Capped at 6 tool-use turns.
+
+**`graph` (legacy / fallback for non-Anthropic providers)** — the classic classifier-then-branch fan-out. The classifier emits one or more intents from `{booking, records, history, medical_search, general}` and the graph fans out; `compose_response` joins. Predictable, easy to grade on routing eval, but limited to the fixed intent set.
+
+For multi-intent queries (e.g., *"My father has CKD; book a nephrologist AND summarize latest treatments"*), `react` mode has Claude emit two tool_use blocks in one turn; `graph` mode has the classifier return both intents and LangGraph fan out in parallel. State fields with multiple writers (`tool_log`, `sources`, `intents`, `error`) use `Annotated[T, reducer]` to avoid the "last write wins" silent-data-loss footgun.
 
 ## Screenshots
 

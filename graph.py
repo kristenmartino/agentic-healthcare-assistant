@@ -41,6 +41,7 @@ import logging
 from langgraph.graph import END, START, StateGraph
 
 from config import Settings, load_settings
+from nodes.agent_loop import agent_loop_node, is_agent_mode_active
 from nodes.booking import booking_node
 from nodes.classifier import classify_intent
 from nodes.composer import compose_response_node
@@ -54,14 +55,20 @@ logger = logging.getLogger(__name__)
 
 
 def _route_after_safety(state: HealthcareState) -> str:
-    """Skip all clinical reasoning when the safety node flagged an emergency.
+    """First-fork: emergency → END (skip everything), otherwise pick the
+    reasoning strategy.
 
-    The safety node has already populated `response` with the hardcoded urgent-
-    care template; routing straight to END preserves it as-is. Putting any LLM
-    node in the loop on an emergency risks softening the message, which is
-    the worst possible failure mode for a clinical assistant.
+    `react` (default when Anthropic is the active provider): single
+    agent_loop node that picks tools dynamically. Adds new capabilities
+    without classifier edits. Better at novel queries.
+
+    `graph` (legacy, also the fallback when Anthropic isn't configured):
+    fixed classifier → branch fan-out → composer. Predictable, easy to
+    eval, but limited to the 5 intents.
     """
-    return "compose_response" if not state.get("is_emergency") else "__skip_to_end__"
+    if state.get("is_emergency"):
+        return "__skip_to_end__"
+    return "agent_loop" if is_agent_mode_active() else "classify_intent"
 
 
 def _route_after_classify(state: HealthcareState) -> list[str]:
@@ -96,6 +103,7 @@ def build_workflow(*, settings: Settings | None = None, with_checkpoint: bool = 
     workflow = StateGraph(HealthcareState)
 
     workflow.add_node("safety", safety_node)
+    workflow.add_node("agent_loop", agent_loop_node)
     workflow.add_node("classify_intent", classify_intent)
     workflow.add_node("booking_node", booking_node)
     workflow.add_node("records_node", records_node)
@@ -105,15 +113,23 @@ def build_workflow(*, settings: Settings | None = None, with_checkpoint: bool = 
 
     workflow.add_edge(START, "safety")
 
-    # On emergency, route straight to END — the safety node's hardcoded
-    # response is the deliverable; the composer must not soften it.
+    # Three-way fork after safety:
+    #   - emergency → END (safety has already populated `response`)
+    #   - react mode + anthropic → agent_loop (single node, tool-using)
+    #   - everything else → classifier graph (legacy path)
     workflow.add_conditional_edges(
         "safety",
         _route_after_safety,
-        {"compose_response": "classify_intent", "__skip_to_end__": END},
+        {
+            "agent_loop": "agent_loop",
+            "classify_intent": "classify_intent",
+            "__skip_to_end__": END,
+        },
     )
+    # agent_loop produces its own final response — go straight to END.
+    workflow.add_edge("agent_loop", END)
 
-    # All branch sets — give LangGraph the full target universe
+    # ---- legacy classifier-graph branches ----
     branch_targets = {
         "booking_node": "booking_node",
         "records_node": "records_node",
@@ -127,7 +143,6 @@ def build_workflow(*, settings: Settings | None = None, with_checkpoint: bool = 
         branch_targets,
     )
 
-    # Every branch flows into compose
     for branch in ("booking_node", "records_node", "history_node", "medical_search_node"):
         workflow.add_edge(branch, "compose_response")
 
