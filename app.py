@@ -241,14 +241,17 @@ with col_main:
                                             accumulated[k] = v
                                 status.update(label=f"Working — {label} done")
                         elif stream_mode == "messages":
-                            # chunk is (AIMessageChunk, metadata-dict). We only
-                            # stream tokens from the composer so the status panel
-                            # doesn't pollute the chat with intent-classifier tokens.
+                            # chunk is (AIMessageChunk, metadata-dict). Stream
+                            # tokens from compose_response AND agent_loop (text
+                            # blocks only — _content_to_text drops tool_use
+                            # blocks, so the agent's tool args never appear).
                             try:
                                 token_msg, metadata = chunk
                             except (TypeError, ValueError):
                                 continue
-                            if metadata.get("langgraph_node") != "compose_response":
+                            if metadata.get("langgraph_node") not in (
+                                "compose_response", "agent_loop",
+                            ):
                                 continue
                             token = getattr(token_msg, "content", "") or ""
                             if not isinstance(token, str):
