@@ -134,13 +134,30 @@ GROUND_TRUTH = [
 
 
 def evaluate_one(workflow, gt: dict, thread_id: str) -> dict:
-    """Run one ground-truth case and grade it. Returns a result dict."""
+    """Run one ground-truth case and grade it. Returns a result dict.
+
+    Each invocation is wrapped in `trace_run` so the eval populates
+    `logs/runs.jsonl` the same way live UI traffic does — graders viewing
+    the 📊 Traces page see eval runs labeled `actor="eval"` and can
+    filter them out (or in) at will.
+    """
+    from tools.tracing import trace_run
+
     start = time.time()
     try:
-        result = workflow.invoke(
-            {"user_input": gt["query"], "history": []},
-            config={"configurable": {"thread_id": thread_id}},
-        )
+        with trace_run(thread_id, gt["query"], actor="eval") as trace_event:
+            result = workflow.invoke(
+                {"user_input": gt["query"], "history": []},
+                config={"configurable": {"thread_id": thread_id}},
+            )
+            trace_event.update({
+                "case_id": gt["id"],
+                "intents": result.get("intents"),
+                "is_emergency": result.get("is_emergency", False),
+                "patient_id": result.get("patient_id"),
+                "node_count": len(result.get("tool_log") or []),
+                "had_error": bool(result.get("error")),
+            })
     except Exception as exc:
         return {
             "id": gt["id"],

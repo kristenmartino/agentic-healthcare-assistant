@@ -94,14 +94,20 @@ def medical_search(
 
 
 def _tavily_search(query: str, api_key: str, top_k: int) -> list[dict]:
-    """Use Tavily API directly via requests (no SDK dep)."""
+    """Use Tavily API directly via requests (no SDK dep).
+
+    `include_domains` does the domain restriction at the API level — we
+    don't also embed `(site:medlineplus.gov OR site:who.int ...)` in the
+    query string, which double-constrained the match and was returning 0
+    results for simple queries like "symptoms of pneumonia".
+    """
     import requests
 
     response = requests.post(
         "https://api.tavily.com/search",
         json={
             "api_key": api_key,
-            "query": f"{query} ({_SITE_FILTER})",
+            "query": query,
             "max_results": top_k,
             "search_depth": "basic",
             "include_domains": list(_TRUSTED_DOMAINS),
