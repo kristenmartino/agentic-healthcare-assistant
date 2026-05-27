@@ -99,6 +99,24 @@ def _settings():
 
 # ---------- health + config ----------
 
+@app.get("/")
+def root() -> dict:
+    """Friendly root — a bare-URL visitor sees a pointer, not a 404."""
+    return {
+        "name": "agentic-healthcare-api",
+        "docs": "/docs",
+        "health": "/health",
+        "endpoints": [
+            "/config", "/health",
+            "/patients", "/patients/{id}", "/patients/search/by-name",
+            "/bookings/recent", "/bookings/specialty-stats",
+            "/audit", "/audit/summary",
+            "/traces",
+            "POST /chat (SSE)",
+        ],
+    }
+
+
 @app.get("/health")
 def health() -> dict:
     """Liveness probe. Used by Fly.io / Docker healthcheck."""
