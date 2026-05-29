@@ -10,12 +10,19 @@ import { useChatStore } from "@/lib/store";
 import { chatStream } from "@/lib/chat";
 import type { Patient } from "@/lib/api";
 
-const EXAMPLE_QUERIES = [
-  "Show me Anjali Mehra's medical history",
-  "Book a cardiologist for next week",
-  "What are the symptoms of pneumonia?",
-  "My 70-year-old father has chronic kidney disease. Book a nephrologist and summarize the latest treatments.",
-];
+// Example prompts for the empty state. The history example tracks the
+// selected patient so it never contradicts the highlighted sidebar entry
+// (e.g. showing "Anjali" while Ramesh is selected).
+function exampleQueries(patientName: string | null): string[] {
+  return [
+    patientName
+      ? `Show me ${patientName}'s medical history`
+      : "Show me my medical history",
+    "Book a cardiologist for next week",
+    "What are the symptoms of pneumonia?",
+    "Book a nephrologist and summarize the latest CKD treatments",
+  ];
+}
 
 export function ChatPanel({ patients }: { patients: Patient[] }) {
   const [input, setInput] = React.useState("");
@@ -120,7 +127,9 @@ export function ChatPanel({ patients }: { patients: Patient[] }) {
       {/* Messages */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6">
         <div className="mx-auto flex max-w-3xl flex-col gap-5">
-          {messages.length === 0 && <EmptyState onPick={send} />}
+          {messages.length === 0 && (
+            <EmptyState onPick={send} patientName={selectedPatient?.name ?? null} />
+          )}
           {messages.map((m, i) => {
             const prev = messages[i - 1];
             const isFirstAssistant = m.role === "assistant" && prev?.role !== "assistant";
@@ -169,7 +178,13 @@ export function ChatPanel({ patients }: { patients: Patient[] }) {
   );
 }
 
-function EmptyState({ onPick }: { onPick: (text: string) => void }) {
+function EmptyState({
+  onPick,
+  patientName,
+}: {
+  onPick: (text: string) => void;
+  patientName: string | null;
+}) {
   return (
     <div className="mx-auto mt-12 max-w-xl text-center">
       <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
@@ -180,7 +195,7 @@ function EmptyState({ onPick }: { onPick: (text: string) => void }) {
         Book appointments, look up patient history, or search trusted medical sources.
       </p>
       <div className="mt-5 grid gap-2 text-left text-sm">
-        {EXAMPLE_QUERIES.map((q) => (
+        {exampleQueries(patientName).map((q) => (
           <button
             key={q}
             type="button"

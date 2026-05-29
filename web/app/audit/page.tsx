@@ -2,7 +2,7 @@
 import * as React from "react";
 import { Download, ShieldCheck } from "lucide-react";
 
-import { AppShell, useShell } from "@/components/app-shell";
+import { useShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,11 +18,7 @@ import type { AuditEvent } from "@/lib/api";
 import { formatTimestamp } from "@/lib/utils";
 
 export default function AuditPage() {
-  return (
-    <AppShell>
-      <AuditView />
-    </AppShell>
-  );
+  return <AuditView />;
 }
 
 function AuditView() {

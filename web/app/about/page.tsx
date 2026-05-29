@@ -1,5 +1,4 @@
 import { ExternalLink, GitBranch, Github } from "lucide-react";
-import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -40,8 +39,7 @@ const features = [
 
 export default function AboutPage() {
   return (
-    <AppShell>
-      <div className="flex h-full flex-col overflow-y-auto">
+    <div className="flex h-full flex-col overflow-y-auto">
         <header className="border-b px-6 py-6">
           <div className="text-xs text-muted-foreground">About</div>
           <h1 className="mt-1 text-2xl font-semibold">Healthcare Assistant</h1>
@@ -100,7 +98,6 @@ export default function AboutPage() {
           Synthetic data; no real PHI. Informational only — not a substitute
           for clinical care.
         </footer>
-      </div>
-    </AppShell>
+    </div>
   );
 }
