@@ -550,7 +550,11 @@ def test_book_appointment_populates_appointment_state(monkeypatch):
         _ai_text("Booked Dr. Test for June 1."),
     ])
     with _patch_client_with(client):
-        out = agent_loop_node({"user_input": "book a cardiologist"})
+        # role=admin bypasses the patient_chat booking-identity guardrail
+        # (tested in test_agent_phi_scope.py); this test only verifies the
+        # accumulator maps the result into appointment state.
+        out = agent_loop_node({"user_input": "book a cardiologist",
+                               "role": "admin"})
     assert out.get("appointment") == fake_appt
 
 
@@ -751,7 +755,11 @@ def test_failed_tool_does_not_overwrite_state(monkeypatch):
     ]
     client = _ScriptedClient([combo, _ai_text("Done.")])
     with _patch_client_with(client):
-        out = agent_loop_node({"user_input": "book and cancel"})
+        # role=admin bypasses patient_chat booking/cancel guardrails; this
+        # test only verifies the accumulator doesn't let a failed call
+        # clobber a successful one.
+        out = agent_loop_node({"user_input": "book and cancel",
+                               "role": "admin"})
     # The booking artifact must survive; the failed cancel doesn't overwrite.
     assert (out.get("appointment") or {}).get("confirmation_no") == "AGS-OK"
 

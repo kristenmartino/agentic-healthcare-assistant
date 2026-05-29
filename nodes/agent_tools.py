@@ -594,14 +594,19 @@ _PHI_TOOLS_NEEDING_ACTIVE_PID: set[str] = {
     "cancel_booking",
 }
 
+# The one name a walk-in (no active patient) session may book under. Matched
+# case-insensitively after stripping whitespace. Mirrors the book_appointment
+# schema hint ("pass 'Walk-in Patient' if unknown").
+_WALK_IN_SENTINEL = "walk-in patient"
+
 
 def _pre_authorize_resolutions(
     tool_name: str, args: dict, scope: dict | None,
 ) -> str | None:
     """Authorization checks that depend on a lookup the tool would do
     anyway. We do the lookup here BEFORE the tool runs so mutations
-    (cancel_booking, upsert_patient) can be denied before they touch the
-    DB — denying after the mutation is useless.
+    (book_appointment, cancel_booking, upsert_patient) can be denied
+    before they touch the DB — denying after the mutation is useless.
 
     Returns None to allow or an error string to deny.
     """
@@ -652,11 +657,56 @@ def _pre_authorize_resolutions(
                     f"active patient {active_pid!r}."
                 )
 
+    # book_appointment walk-in guard runs BEFORE the no-active-pid early
+    # return (like upsert_patient): a walk-in session has no authenticated
+    # identity, so it may only book under the explicit "Walk-in Patient"
+    # sentinel. Booking under a real name from a walk-in session would mint
+    # an audit row that looks like that named patient booked — exactly the
+    # spoof we want to block. Named new patients must go through
+    # upsert_patient first, then book from an active-patient session.
+    if tool_name == "book_appointment" and not active_pid:
+        requested = (args.get("patient_name") or "").strip().lower()
+        if requested != _WALK_IN_SENTINEL:
+            return (
+                "Not authorized: a walk-in patient_chat session (no active "
+                f"patient) can only book under the {'Walk-in Patient'!r} "
+                "sentinel name. To book under a real name, register the "
+                "patient first or sign in as that patient."
+            )
+
     if not active_pid:
         # Everything below requires an active patient. _authorize already
         # denied the PHI-tool calls that needed one; remaining no-active-pid
-        # calls (e.g. medical_search, book_appointment for walk-ins) are fine.
+        # calls (e.g. medical_search) are fine.
         return None
+
+    if tool_name == "book_appointment":
+        # Active-patient session: allow booking for the active patient OR
+        # for a brand-new name not yet in the system (covers "book my dad
+        # in" as a fresh record). DENY booking under a DIFFERENT existing
+        # patient's name — that would let an active session create a
+        # booking attributed to another known patient.
+        requested = args.get("patient_name")
+        if requested:
+            from tools.ehr import find_patient_by_name
+            try:
+                existing = find_patient_by_name(requested, load_settings(),
+                                                actor="agent")
+            except Exception as exc:
+                logger.warning("pre-auth EHR lookup failed for "
+                               "book_appointment (%s): %s", requested, exc)
+                return (
+                    "Not authorized: could not verify patient identity for "
+                    f"book_appointment ({requested!r}); refusing to run the tool."
+                )
+            if existing and existing.get("patient_id") != active_pid:
+                return (
+                    "Not authorized: book_appointment for an existing patient "
+                    f"{requested!r} (patient_id {existing.get('patient_id')!r}) "
+                    f"which differs from the active patient {active_pid!r}. "
+                    "Book for the active patient, or for a new (unregistered) "
+                    "name."
+                )
 
     if tool_name == "cancel_booking":
         from tools.appointments import list_all_bookings
