@@ -1,4 +1,5 @@
 "use client";
+import * as React from "react";
 import { motion } from "framer-motion";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -81,11 +82,30 @@ export function Message({ message }: { message: ChatMessage }) {
 }
 
 function ThinkingIndicator() {
+  // A bouncing-dots animation alone loops silently and can still feel hung
+  // on a slow turn. A ticking elapsed counter (shown once we cross ~2s) is
+  // unambiguous proof the request is still alive, not stuck. The timer
+  // starts on mount — i.e. the moment the streaming bubble first renders —
+  // and clears when content arrives and this component unmounts.
+  const [elapsed, setElapsed] = React.useState(0);
+  React.useEffect(() => {
+    const start = Date.now();
+    const id = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
   return (
-    <div className="flex items-center gap-1 py-1 text-muted-foreground">
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.3s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.15s]" />
-      <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current" />
+    <div className="flex items-center gap-2 py-1 text-muted-foreground">
+      <div className="flex items-center gap-1" aria-hidden>
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.3s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.15s]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current" />
+      </div>
+      <span className="text-xs" role="status" aria-live="polite">
+        Working…{elapsed >= 2 ? ` ${elapsed}s` : ""}
+      </span>
     </div>
   );
 }

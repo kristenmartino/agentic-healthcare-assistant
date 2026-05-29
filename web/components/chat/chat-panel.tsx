@@ -127,7 +127,7 @@ export function ChatPanel({ patients }: { patients: Patient[] }) {
             return (
               <div key={m.id}>
                 {m.role === "assistant" && m.statusEvents?.length ? (
-                  <StatusStrip events={m.statusEvents} streaming={m.streaming} />
+                  <StatusStrip events={m.statusEvents} />
                 ) : null}
                 <Message message={m} />
                 {isFirstAssistant && null}
