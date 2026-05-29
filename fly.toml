@@ -24,7 +24,13 @@ primary_region = "iad"   # us-east — closest to Vercel's edge for most traffic
 [http_service]
   internal_port = 8000
   force_https = true
-  auto_stop_machines = "stop"      # spin down between requests on free tier
+  # "suspend" snapshots the machine's memory and resumes in ~sub-second on the
+  # next request, instead of a full cold boot (container start → uvicorn →
+  # LangGraph workflow build → slot top-up) that "stop" pays. Billed for rootfs
+  # storage while idle rather than running CPU/RAM, so it's far cheaper than
+  # keeping a machine warm — best latency-per-dollar for the first request
+  # after idle. min_machines_running stays 0; auto_start brings it back.
+  auto_stop_machines = "suspend"
   auto_start_machines = true
   min_machines_running = 0
 
