@@ -5,17 +5,13 @@ import { Badge } from "@/components/ui/badge";
 import type { StatusEvent } from "@/lib/chat";
 
 /**
- * Per-message status strip — the node-progress trail shown above the
- * assistant's response while the workflow is running, and collapsed to
- * a one-line summary after it completes.
+ * Per-message status strip — the trail of completed workflow steps shown
+ * above the assistant's response. Each badge is a node that has finished
+ * (the backend emits a step as the node completes). The live "still
+ * working" signal is owned by the bubble's ThinkingIndicator (which shows
+ * a ticking elapsed timer), so the strip stays a clean done-step trail.
  */
-export function StatusStrip({
-  events,
-  streaming,
-}: {
-  events: StatusEvent[];
-  streaming?: boolean;
-}) {
+export function StatusStrip({ events }: { events: StatusEvent[] }) {
   if (!events.length) return null;
   return (
     <div className="ml-11 mb-1 flex flex-wrap items-center gap-1.5">
@@ -37,15 +33,6 @@ export function StatusStrip({
           </Badge>
         </motion.div>
       ))}
-      {streaming && (
-        <motion.span
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="text-[11px] text-muted-foreground"
-        >
-          …working
-        </motion.span>
-      )}
     </div>
   );
 }
