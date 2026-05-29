@@ -9,6 +9,14 @@ The record being changed is resolved from context (the active patient, or
 an appointment confirmation number), never from the new name. When no
 identity can be resolved for an update, we refuse rather than insert a
 junk record.
+
+PHI scope: writes are gated the same fail-closed way as reads (see
+nodes/history.py and the agent dispatcher in nodes/agent_tools.py). A
+patient_chat caller may only write to a record it can prove a link to —
+the authenticated active patient, or a record resolved from an appointment
+confirmation number — plus insert a brand-new record. It may NOT edit an
+existing record purely by naming it (that targets someone else's PHI).
+Clinician/admin callers are unrestricted.
 """
 from __future__ import annotations
 
@@ -17,9 +25,15 @@ import re
 
 from config import load_settings
 from state import HealthcareState
+from tools.audit import log_access
 from tools.ehr import add_or_update_patient, find_patient_by_name, list_patients
 
 logger = logging.getLogger(__name__)
+
+# Roles that may write to any patient's record. patient_chat is scoped to
+# the active / confirmation-resolved patient (plus new inserts); everything
+# else here is a trusted caller.
+_UNRESTRICTED_ROLES = {"clinician", "admin"}
 
 
 # Appointment confirmation numbers look like "AGS-681558".
@@ -147,6 +161,8 @@ def _refuse(message: str, reason: str) -> dict:
 def records_node(state: HealthcareState) -> dict:
     settings = load_settings()
     user_input = state.get("user_input") or ""
+    role = (state.get("role") or "patient_chat").lower()
+    trusted = role in _UNRESTRICTED_ROLES
 
     new_name = _extract_new_name_value(user_input)
 
@@ -174,10 +190,15 @@ def records_node(state: HealthcareState) -> dict:
     # Classic "update <Name>'s record" — the named patient IS the subject,
     # but ONLY when there's no explicit 'set name to X' value in the message
     # (otherwise the name in the text is the new value, not the subject).
-    if not target_pid and not new_name:
+    #
+    # PHI scope: resolving an EXISTING record purely by name is only reached
+    # when there's no active patient (a walk-in), so for patient_chat it can
+    # only ever target SOMEONE ELSE's record. Restrict edit-by-name to
+    # trusted roles; patient_chat falls through to register-or-refuse.
+    if not target_pid and not new_name and trusted:
         subject = state.get("patient_name")
         if subject:
-            existing = find_patient_by_name(subject, settings, actor="patient_chat")
+            existing = find_patient_by_name(subject, settings, actor=role)
             if existing:
                 target_pid = existing["patient_id"]
                 target_name = existing.get("name")
@@ -204,6 +225,27 @@ def records_node(state: HealthcareState) -> dict:
                 "To register a new patient I need their full name.",
                 "registration_no_name",
             )
+        # PHI scope: add_or_update_patient upserts by name, so a "registration"
+        # whose name collides with an existing patient would silently UPDATE
+        # that patient's record. For patient_chat (no proven link to that
+        # record) refuse rather than write to someone else's PHI.
+        if not trusted:
+            existing = find_patient_by_name(reg_name, settings, actor="patient_chat")
+            if existing:
+                log_access(
+                    "patient_chat", "ehr.write", "Patient", existing.get("patient_id"),
+                    patient_id=existing.get("patient_id"), outcome="denied",
+                    details={"reason": "registration_name_collision",
+                             "reg_name": reg_name},
+                )
+                return _refuse(
+                    "A patient named "
+                    f"{reg_name} already exists. I can't modify an existing "
+                    "record from a walk-in session — select that patient (or "
+                    "provide their appointment confirmation number) and try "
+                    "again.",
+                    "registration_name_collision",
+                )
         fields["name"] = reg_name
         return _apply(fields, settings, "registration")
 

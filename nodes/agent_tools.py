@@ -175,9 +175,14 @@ def _tool_get_patient_history(patient_name: str) -> dict:
 
     # Delegate to the legacy node for FAISS + LLM-synthesized summary.
     # The node already audits patient access; we tag the actor through state.
+    # The dispatcher has ALREADY authorized this read (cross-patient denials
+    # happen in _pre_authorize_resolutions before we get here), so pass the
+    # resolved patient_id as the active context — that satisfies the node's
+    # own PHI-scope guard for the patient_chat case without re-deriving role.
     legacy_state = {
         "user_input": f"history for {patient_name}",
         "patient_name": patient_name,
+        "patient_id": record["patient_id"],
     }
     try:
         legacy_out = history_node(legacy_state)

@@ -176,16 +176,59 @@ def test_registration_still_inserts(fixture_settings):
     assert out["record_change"]["after"]["name"] == "John Smith"
 
 
-def test_classic_update_by_name_preserved(fixture_settings):
-    """'update Anjali's record summary: ...' with the name as subject (no
-    'name to X' phrasing) resolves the named patient and updates."""
+# ---------- PHI scope: edit-by-name is gated ----------
+
+def test_walk_in_update_by_name_refused(fixture_settings):
+    """PHI scope: a walk-in (patient_chat, no active patient) must NOT be
+    able to edit an existing record purely by naming it — that targets
+    someone else's PHI. It falls through to a refusal, and nothing is
+    written."""
+    from nodes.records import records_node
+
+    out = records_node({
+        "user_input": "update the record, summary: hypertension",
+        "patient_name": "Ramesh Kulkarni",  # classifier-extracted subject
+        # no patient_id, no role → walk-in patient_chat
+    })
+    assert "error" in out
+    assert "record_change" not in out
+    # Ramesh's record is untouched.
+    ehr.clear_backend_cache()
+    ramesh = next(p for p in ehr.list_patients(fixture_settings)
+                  if p["patient_id"] == "fhir:ramesh-kulkarni")
+    assert not ramesh.get("summary")
+
+
+def test_clinician_update_by_name_allowed(fixture_settings):
+    """Trusted roles (clinician/admin) keep edit-by-name — they operate on
+    behalf of the clinic, not a single authenticated patient."""
     from nodes.records import records_node
 
     out = records_node({
         "user_input": "update the record, summary: hypertension",
         "patient_name": "Ramesh Kulkarni",
+        "role": "clinician",
     })
     assert "error" not in out
     rc = out["record_change"]
     assert rc["operation"] == "update"
     assert rc["patient_id"] == "fhir:ramesh-kulkarni"
+
+
+def test_walk_in_registration_name_collision_refused(fixture_settings):
+    """PHI scope: add_or_update_patient upserts by name, so a walk-in
+    'registration' that collides with an existing patient would silently
+    update that patient's record. Refuse instead of writing."""
+    from nodes.records import records_node
+
+    out = records_node({
+        "user_input": "Register a new patient Ramesh Kulkarni, age 50",
+        "patient_name": "Ramesh Kulkarni",
+    })
+    assert "error" in out
+    assert "record_change" not in out
+    # The existing Ramesh record was not modified (age unchanged from 1972).
+    ehr.clear_backend_cache()
+    ramesh = next(p for p in ehr.list_patients(fixture_settings)
+                  if p["patient_id"] == "fhir:ramesh-kulkarni")
+    assert ramesh.get("age") != 50
