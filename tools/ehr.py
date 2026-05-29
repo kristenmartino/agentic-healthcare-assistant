@@ -215,25 +215,50 @@ class _FhirFixtureBackend:
                 return patient
         return None
 
+    def _find_by_patient_id(self, patient_id: str) -> dict | None:
+        if not patient_id:
+            return None
+        for patient in self.list_patients():
+            if patient.get("patient_id") == patient_id:
+                return patient
+        return None
+
     def add_or_update_patient(self, fields: dict) -> dict:
         from tools.fhir_client import (
             from_internal_patient,
             synthetic_fhir_id,
             to_internal_patient,
         )
+        # Identity resolution priority:
+        #   1. An explicit patient_id targets an EXISTING record — this is
+        #      how a rename works (change the name on a known record rather
+        #      than minting a new id from the new name).
+        #   2. Otherwise fall back to name-keying (register-new / update-by-name).
+        explicit_pid = fields.get("patient_id")
         before = None
-        if fields.get("name"):
+        if explicit_pid:
+            before = self._find_by_patient_id(explicit_pid)
+        if before is None and fields.get("name"):
             before = self.find_patient_by_name(fields["name"])
-        if before and before.get("fhir_id"):
-            fields = {**fields, "patient_id": f"fhir:{before['fhir_id']}"}
+
+        if before:
+            # Targeted UPDATE: keep the existing id, merge new non-null fields
+            # over the existing record so a partial change (e.g. just the
+            # name) doesn't wipe age / gender / phone.
+            merged = {**before, **{k: v for k, v in fields.items() if v is not None}}
+            merged["patient_id"] = before["patient_id"]
+            resource = from_internal_patient(merged)
+            operation = "update"
         else:
-            fields = {
+            # INSERT: mint a deterministic id from the name.
+            new_fields = {
                 **fields,
                 "patient_id": f"fhir:{synthetic_fhir_id(fields.get('name', ''))}",
             }
-        resource = from_internal_patient(fields)
+            resource = from_internal_patient(new_fields)
+            operation = "insert"
 
-        # Persist into the overlay
+        # Persist into the overlay (dedupe by resource id)
         self.fixture_dir.mkdir(parents=True, exist_ok=True)
         overlay = self._load("patients_writes.json")
         overlay = [r for r in overlay if r.get("id") != resource.get("id")]
@@ -242,7 +267,7 @@ class _FhirFixtureBackend:
 
         after = to_internal_patient(resource)
         return {
-            "operation": "update" if before else "insert",
+            "operation": operation,
             "patient_id": after["patient_id"],
             "before": before,
             "after": after,
