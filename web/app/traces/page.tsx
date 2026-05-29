@@ -89,6 +89,7 @@ function TracesView() {
                 <Th>Intents</Th>
                 <Th>Backend</Th>
                 <Th>Latency</Th>
+                <Th>Slowest node</Th>
                 <Th>Flags</Th>
               </tr>
             </thead>
@@ -140,7 +141,21 @@ function TracesView() {
                     </span>
                   </Td>
                   <Td>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {slowestNode(e) ?? "—"}
+                    </span>
+                  </Td>
+                  <Td>
                     <div className="flex gap-1">
+                      {e.cold_start && (
+                        <Badge
+                          variant="warning"
+                          className="text-[9px]"
+                          title="First request since this process booted — cold start"
+                        >
+                          🧊 cold
+                        </Badge>
+                      )}
                       {e.is_emergency && (
                         <Badge variant="destructive" className="text-[9px]">
                           🚨
@@ -161,6 +176,15 @@ function TracesView() {
       </div>
     </div>
   );
+}
+
+function slowestNode(e: TraceEvent): string | null {
+  const timings = e.node_timings;
+  if (!timings) return null;
+  const entries = Object.entries(timings);
+  if (!entries.length) return null;
+  const [name, ms] = entries.reduce((a, b) => (b[1] > a[1] ? b : a));
+  return `${name} (${Math.round(ms)}ms)`;
 }
 
 function MetricCard({
