@@ -74,6 +74,35 @@ jobs:
         run: |
           python -m eval.adversarial || (echo "::error::adversarial eval red-line failure" && exit 1)
 
+  web-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: Run tests
+        working-directory: web
+        run: npm test
+
+      - name: Lint
+        working-directory: web
+        run: npm run lint
+
   # Auto-deploy the FastAPI service to Fly.io after tests pass on main.
   # This closes the "merged but not live" gap that left the PHI-scope fix
   # un-deployed: when deploys are manual, a security fix can sit on main
@@ -81,7 +110,7 @@ jobs:
   # warning, not a failure) until the FLY_API_TOKEN repo secret is added,
   # so it never reds-out main before the deploy credential is configured.
   deploy:
-    needs: lint-and-test
+    needs: [lint-and-test, web-test]
     runs-on: ubuntu-latest
     # Deploy on merge to main, or on a manual "Run workflow" against main
     # (Actions tab → workflow_dispatch) — the latter is the on-demand

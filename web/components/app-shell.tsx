@@ -36,7 +36,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // A warm backend answers in well under a second; if we're still waiting
     // after 2.5s the scale-to-zero server is almost certainly cold-booting,
     // so show a friendly "waking up" note instead of nothing. api.ts retries
-    // the request underneath for up to ~50s before this ever rejects.
+    // the request underneath up to a deadline-bounded ~60s before this rejects.
     const wakeTimer = setTimeout(() => {
       if (!cancelled) setWaking(true);
     }, 2500);
@@ -70,8 +70,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main className="flex flex-1 flex-col overflow-hidden">
           {loading && waking && (
             <div className="border-b bg-muted px-4 py-2 text-xs text-muted-foreground">
-              ⏳ Waking up the backend… the free-tier server sleeps when idle and
-              can take up to a minute to start. Retrying automatically.
+              ⏳ Waking up the backend… the service sleeps when idle and may take
+              up to a minute to start. Retrying automatically.
             </div>
           )}
           {!loading && error && (

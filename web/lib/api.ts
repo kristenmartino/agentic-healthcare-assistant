@@ -15,37 +15,92 @@ const API_BASE =
 // while the machine wakes. Retry transient failures (network errors +
 // 502/503/504) with backoff so a cold load self-heals instead of surfacing as
 // a hard "Backend unreachable".
-const RETRY_BACKOFF_MS = [1000, 2000, 3000, 5000, 8000, 8000, 8000, 8000, 8000]; // ~50s budget
+//
+// Budget: the whole retry loop is bounded by a TRUE overall deadline of ~60s
+// (TOTAL_RETRY_BUDGET_MS), measured in wall-clock time from the first attempt.
+// Every per-attempt timeout and every backoff sleep is clamped to whatever
+// remains of that budget, so a slow/hanging backend can never push total
+// wall-clock time past ~60s — regardless of how many attempts or how long any
+// single attempt hangs. RETRY_BACKOFF_MS is the *intended* backoff schedule;
+// the deadline, not the schedule length, is what ultimately bounds the work.
+const TOTAL_RETRY_BUDGET_MS = 60000;
+const RETRY_BACKOFF_MS = [1000, 2000, 3000, 5000, 8000, 8000, 8000, 8000, 8000];
 const RETRY_STATUSES = new Set([502, 503, 504]);
 const ATTEMPT_TIMEOUT_MS = 15000;
 
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
 
-async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+export async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const startedAt = Date.now();
   let lastErr: unknown;
+
   for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+    const remaining = TOTAL_RETRY_BUDGET_MS - (Date.now() - startedAt);
+    if (remaining <= 0) break;
+
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), ATTEMPT_TIMEOUT_MS);
+    // Clamp the per-attempt timeout to the remaining budget so a single
+    // hanging attempt can never push total wall-clock past TOTAL_RETRY_BUDGET_MS.
+    const timer = setTimeout(
+      () => ctrl.abort(),
+      Math.min(ATTEMPT_TIMEOUT_MS, remaining),
+    );
+
+    // Compose the caller-provided signal (if any) with our internal timeout
+    // controller. Naively spreading `signal: ctrl.signal` would silently drop
+    // the caller's signal; instead we forward the caller's abort onto `ctrl`.
+    // Done manually with addEventListener (not AbortSignal.any) for broad
+    // browser support, and the listener is cleaned up in `finally`.
+    const callerSignal = init.signal;
+    let onCallerAbort: (() => void) | undefined;
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        ctrl.abort((callerSignal as AbortSignal).reason);
+      } else {
+        onCallerAbort = () =>
+          ctrl.abort((callerSignal as AbortSignal).reason);
+        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
+      }
+    }
+
     try {
       const r = await fetch(url, { ...init, signal: ctrl.signal });
-      clearTimeout(timer);
       // Gateway errors are emitted by the proxy while the machine wakes — retry.
       if (RETRY_STATUSES.has(r.status) && attempt < RETRY_BACKOFF_MS.length) {
-        await sleep(RETRY_BACKOFF_MS[attempt]);
+        const sleepMs = Math.min(
+          RETRY_BACKOFF_MS[attempt],
+          TOTAL_RETRY_BUDGET_MS - (Date.now() - startedAt),
+        );
+        if (sleepMs <= 0) return r; // budget exhausted — surface what we have
+        await sleep(sleepMs);
         continue;
       }
       return r;
     } catch (e) {
       // Network error or per-attempt timeout (AbortError) — retry if budget left.
-      clearTimeout(timer);
       lastErr = e;
       if (attempt < RETRY_BACKOFF_MS.length) {
-        await sleep(RETRY_BACKOFF_MS[attempt]);
+        const sleepMs = Math.min(
+          RETRY_BACKOFF_MS[attempt],
+          TOTAL_RETRY_BUDGET_MS - (Date.now() - startedAt),
+        );
+        if (sleepMs <= 0) break; // budget exhausted — stop retrying
+        await sleep(sleepMs);
         continue;
+      }
+    } finally {
+      clearTimeout(timer);
+      if (callerSignal && onCallerAbort) {
+        callerSignal.removeEventListener("abort", onCallerAbort);
       }
     }
   }
-  throw lastErr instanceof Error ? lastErr : new Error("Failed to fetch");
+
+  if (lastErr instanceof Error) throw lastErr;
+  throw new Error("Backend did not respond before retry budget expired");
 }
 
 async function get<T>(path: string, init?: RequestInit): Promise<T> {

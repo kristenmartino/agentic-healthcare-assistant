@@ -26,7 +26,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # Allow `python -m api.main` from the project root
@@ -94,6 +94,14 @@ def _bootstrap() -> None:
     settings = load_settings()
     app.state.settings = settings
     app.state.workflow = None
+    # Warmup observability: the workflow now builds in a background thread, so
+    # the service can answer /health before it's actually ready — and a build
+    # *failure* would otherwise stay invisible until the first /chat. Track the
+    # build's lifecycle here so /ready and /config can surface it loudly.
+    # `workflow_error` holds only the exception TYPE NAME (never the message),
+    # so the readiness signal can never leak PII or secrets.
+    app.state.workflow_status = "warming"
+    app.state.workflow_error = None
     # Top up the appointments DB so the first booking call doesn't fail
     # against a stale slot table.
     try:
@@ -133,8 +141,21 @@ def _get_workflow():
         wf = getattr(app.state, "workflow", None)
         if wf is None:
             logger.info("Building LangGraph workflow…")
-            wf = build_workflow(with_checkpoint=True)
+            try:
+                wf = build_workflow(with_checkpoint=True)
+            except Exception as exc:
+                # Record the failure so /ready and /config report "error"
+                # instead of silently looking healthy. Store only the
+                # exception TYPE NAME (redacted) — never str(exc), which could
+                # carry PII or secrets — then re-raise so the caller still sees
+                # the original error.
+                app.state.workflow_status = "error"
+                app.state.workflow_error = type(exc).__name__
+                logger.exception("LangGraph workflow build failed.")
+                raise
             app.state.workflow = wf
+            app.state.workflow_status = "ready"
+            app.state.workflow_error = None
             logger.info("LangGraph workflow ready.")
         return wf
 
@@ -210,7 +231,38 @@ def get_config() -> dict:
         "langsmith_enabled": langsmith_enabled(),
         "langsmith_project": langsmith_project(),
         "prompt_caching_enabled": s.enable_prompt_caching,
+        # Workflow warmup state for the dashboard's status row. Read defensively
+        # so /config never 500s even if the markers somehow aren't set yet.
+        # workflow_error is a redacted exception type name (or null), not a
+        # message — safe to expose to the frontend.
+        "workflow_status": getattr(app.state, "workflow_status", "unknown"),
+        "workflow_error": getattr(app.state, "workflow_error", None),
     }
+
+
+@app.get("/ready")
+def ready():
+    """Readiness probe — distinct from /health (liveness).
+
+    /health stays 200 throughout warmup so Fly's machine healthcheck never
+    recycles a machine that is merely still building its workflow. /ready is
+    the *readiness* signal: 200 only once the LangGraph workflow has finished
+    building, 503 while warming or after a build failure. Orchestration that
+    wants to gate traffic on actual readiness (or a dashboard badge) should
+    poll this, not /health. The body always carries the status fields so a 503
+    is still diagnosable.
+    """
+    status = getattr(app.state, "workflow_status", "unknown")
+    error = getattr(app.state, "workflow_error", None)
+    is_ready = status == "ready"
+    return JSONResponse(
+        status_code=200 if is_ready else 503,
+        content={
+            "ready": is_ready,
+            "workflow_status": status,
+            "workflow_error": error,
+        },
+    )
 
 
 # ---------- patients ----------
