@@ -225,11 +225,25 @@ def get_traces(limit: int = Query(100, ge=1, le=1000)) -> dict:
 
 # ---------- chat (SSE) ----------
 
+# Cap how many prior conversation messages we replay into the workflow.
+# ~16 messages ≈ 8 turns; bounds prompt tokens (and the prompt-cache tax)
+# while giving the composer / agent_loop enough context for follow-ups.
+_MAX_HISTORY_MESSAGES = 16
+
+
+class ChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., max_length=8000)
+
+
 class ChatRequest(BaseModel):
     user_input: str = Field(..., min_length=1, max_length=4000)
     thread_id: str | None = Field(None, description="Stable id for cross-turn memory")
     patient_id: str | None = None
     patient_name: str | None = None
+    history: list[ChatTurn] | None = Field(
+        None, description="Prior conversation turns (oldest first) for cross-turn memory",
+    )
 
 
 @app.post("/chat")
@@ -247,7 +261,13 @@ async def chat_stream(req: ChatRequest):
     right-hand panel (sources, audit, etc.).
     """
     workflow = app.state.workflow
-    initial_state: dict = {"user_input": req.user_input, "history": []}
+    # Thread prior turns so the composer (graph mode) and agent_loop (react
+    # mode) can resolve follow-ups. The client sends the authoritative
+    # conversation; we cap and overwrite rather than relying on the
+    # per-thread checkpoint (the Fly container is ephemeral and not shared
+    # across instances, so client-sent history is the reliable source).
+    history = [t.model_dump() for t in (req.history or [])][-_MAX_HISTORY_MESSAGES:]
+    initial_state: dict = {"user_input": req.user_input, "history": history}
     if req.patient_id:
         initial_state["patient_id"] = req.patient_id
     if req.patient_name:

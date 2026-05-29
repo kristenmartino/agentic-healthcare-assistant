@@ -190,3 +190,30 @@ def test_chat_emits_sse_events(client):
     # Must include the canonical event types
     assert "event: status" in text
     assert "event: done" in text
+
+
+def test_chat_accepts_history_field(client):
+    """Issue #9: /chat accepts prior conversation turns and streams normally."""
+    with client.stream(
+        "POST", "/chat",
+        json={
+            "user_input": "and his cholesterol?",
+            "thread_id": "mem-test",
+            "history": [
+                {"role": "user", "content": "Show me Ramesh's history"},
+                {"role": "assistant", "content": "Ramesh has CKD stage 2."},
+            ],
+        },
+    ) as r:
+        assert r.status_code == 200
+        body = b"".join(r.iter_bytes())
+    assert b"event: done" in body
+
+
+def test_chat_rejects_malformed_history(client):
+    """A history turn with an invalid role is rejected by validation."""
+    r = client.post("/chat", json={
+        "user_input": "hi",
+        "history": [{"role": "wizard", "content": "x"}],
+    })
+    assert r.status_code == 422
