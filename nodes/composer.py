@@ -16,6 +16,9 @@ _DISCLAIMER = (
     "substitute for advice from a licensed clinician."
 )
 
+# Cap how many prior conversation turns we replay into the composer prompt.
+_HISTORY_TURN_CAP = 8
+
 
 def _build_context_block(state: HealthcareState) -> str:
     """Render the available branch outputs as a structured prompt section."""
@@ -139,12 +142,21 @@ def compose_response_node(state: HealthcareState) -> dict:
         f"Compose the final response now."
     )
 
+    # Thread prior conversation turns so the composer can resolve references
+    # to earlier turns ("what about her cholesterol?", "book him in too").
+    # Inserted between the system prompt and the current turn. Bounded to the
+    # last few turns to keep tokens in check.
+    messages: list[dict] = [{"role": "system", "content": COMPOSER_PROMPT}]
+    for turn in (state.get("history") or [])[-_HISTORY_TURN_CAP:]:
+        role = turn.get("role")
+        content = (turn.get("content") or "").strip()
+        if content and role in ("user", "assistant"):
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_block})
+
     try:
         response = chat(
-            messages=[
-                {"role": "system", "content": COMPOSER_PROMPT},
-                {"role": "user", "content": user_block},
-            ],
+            messages=messages,
             temperature=0.3,
             max_tokens=400,
         ).strip()

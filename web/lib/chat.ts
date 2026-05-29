@@ -44,11 +44,19 @@ export type ChatHandlers = {
   onError?: (msg: string) => void;
 };
 
+export type ChatTurn = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 export type ChatRequest = {
   user_input: string;
   thread_id?: string;
   patient_id?: string | null;
   patient_name?: string | null;
+  // Prior conversation turns (oldest first) so the backend can resolve
+  // follow-ups. The backend caps these; we also cap on the client.
+  history?: ChatTurn[];
 };
 
 export async function chatStream(

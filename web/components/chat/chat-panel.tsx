@@ -47,6 +47,19 @@ export function ChatPanel({ patients }: { patients: Patient[] }) {
       if (!trimmed || busy) return;
       setBusy(true);
       setInput("");
+
+      // Snapshot the conversation BEFORE appending the new turn, so the
+      // backend gets prior turns as memory. Read fresh from the store to
+      // avoid a stale closure. Skip empty / streaming / error bubbles, and
+      // cap to the last 16 messages (~8 turns) to bound prompt tokens.
+      const history = useChatStore
+        .getState()
+        .messages.filter(
+          (m) => !m.streaming && m.content.trim() && !m.content.startsWith("⚠️"),
+        )
+        .slice(-16)
+        .map((m) => ({ role: m.role, content: m.content }));
+
       appendUserMessage(trimmed);
       const aId = appendAssistantMessage();
 
@@ -57,6 +70,7 @@ export function ChatPanel({ patients }: { patients: Patient[] }) {
             thread_id: threadId,
             patient_id: selectedPatient?.patient_id ?? null,
             patient_name: selectedPatient?.name ?? null,
+            history,
           },
           {
             onStatus: (e) => recordStatusEvent(aId, e),
