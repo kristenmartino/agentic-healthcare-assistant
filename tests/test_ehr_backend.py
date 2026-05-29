@@ -103,6 +103,28 @@ def test_update_existing_patient(fixture_settings):
     assert result["before"] is not None
 
 
+def test_update_by_patient_id_renames_without_minting_new_record(fixture_settings):
+    """An explicit patient_id targets the existing record so a rename
+    updates it in place rather than creating a new one (issue #11)."""
+    result = ehr.add_or_update_patient(
+        {"patient_id": "fhir:david-thompson", "name": "David Thompson-Smith"},
+        fixture_settings,
+    )
+    assert result["operation"] == "update"
+    assert result["patient_id"] == "fhir:david-thompson"
+    assert result["after"]["name"] == "David Thompson-Smith"
+
+    ehr.clear_backend_cache()
+    patients = ehr.list_patients(fixture_settings)
+    # No new record minted — still exactly the two seeded patients.
+    assert len(patients) == 2
+    names = [p["name"] for p in patients]
+    assert "David Thompson-Smith" in names
+    assert "David Thompson" not in names
+    # The id is unchanged; the rename happened in place.
+    assert "fhir:david-thompson" in [p["patient_id"] for p in patients]
+
+
 def test_clinical_context_returns_conditions_and_observations(fixture_settings):
     ctx = ehr.get_patient_clinical_context("fhir:anjali-mehra", fixture_settings)
     assert len(ctx["conditions"]) == 1
