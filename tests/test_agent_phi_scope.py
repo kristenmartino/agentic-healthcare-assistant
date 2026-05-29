@@ -249,6 +249,12 @@ def test_doctor_schedule_no_masking_for_clinician(monkeypatch):
 # ---------- booking flows still work in patient_chat ----------
 
 def test_book_appointment_still_works_in_patient_chat(monkeypatch):
+    # "Test" resolves to no existing patient → treated as a brand-new
+    # (unregistered) name, which an active session may book for.
+    monkeypatch.setattr(
+        "tools.ehr.find_patient_by_name",
+        lambda name, settings, actor=None: None,
+    )
     monkeypatch.setattr(agent_tools, "_tool_book_appointment",
                         lambda **kwargs: {"confirmation_no": "AGS-OK"})
     result = agent_tools.dispatch(
@@ -257,6 +263,111 @@ def test_book_appointment_still_works_in_patient_chat(monkeypatch):
         scope={"role": "patient_chat", "patient_id": "fhir:active"},
     )
     assert result.get("confirmation_no") == "AGS-OK"
+
+
+# ---------- booking identity semantics (issue #7) ----------
+
+def test_book_appointment_allowed_for_active_patient(monkeypatch):
+    """Booking under the active patient's own name resolves to the active
+    patient_id → allowed."""
+    monkeypatch.setattr(
+        "tools.ehr.find_patient_by_name",
+        lambda name, settings, actor=None: {"patient_id": "fhir:anjali-mehra",
+                                            "name": "Anjali Mehra"},
+    )
+    monkeypatch.setattr(agent_tools, "_tool_book_appointment",
+                        lambda **kw: {"confirmation_no": "AGS-SELF"})
+    result = agent_tools.dispatch(
+        "book_appointment",
+        {"patient_name": "Anjali Mehra", "specialty": "cardiology"},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    assert result.get("confirmation_no") == "AGS-SELF"
+
+
+def test_book_appointment_allowed_for_brand_new_name(monkeypatch):
+    """An active session booking for a name not yet in the system (a
+    dependent — 'book my dad in') is allowed; it mints a fresh record."""
+    monkeypatch.setattr(
+        "tools.ehr.find_patient_by_name",
+        lambda name, settings, actor=None: None,
+    )
+    monkeypatch.setattr(agent_tools, "_tool_book_appointment",
+                        lambda **kw: {"confirmation_no": "AGS-DEP"})
+    result = agent_tools.dispatch(
+        "book_appointment",
+        {"patient_name": "Raj Mehra Sr", "specialty": "geriatrics"},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    assert result.get("confirmation_no") == "AGS-DEP"
+
+
+def test_book_appointment_denied_for_other_existing_patient(monkeypatch):
+    """An active session cannot book under a DIFFERENT existing patient's
+    name — that would attribute a booking to another known patient."""
+    monkeypatch.setattr(
+        "tools.ehr.find_patient_by_name",
+        lambda name, settings, actor=None: {"patient_id": "fhir:david-thompson",
+                                            "name": "David Thompson"},
+    )
+    called = {"tool": 0}
+
+    def _should_not_run(**kw):
+        called["tool"] += 1
+        return {"confirmation_no": "AGS-LEAK"}
+
+    monkeypatch.setattr(agent_tools, "_tool_book_appointment", _should_not_run)
+    result = agent_tools.dispatch(
+        "book_appointment",
+        {"patient_name": "David Thompson", "specialty": "cardiology"},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    err = result.get("error") or ""
+    assert "Not authorized" in err
+    assert "fhir:david-thompson" in err
+    assert called["tool"] == 0
+
+
+def test_walk_in_book_appointment_under_known_name_denied(monkeypatch):
+    """A walk-in session (no active patient) cannot book under a real
+    name — only under the 'Walk-in Patient' sentinel. Prevents a walk-in
+    from minting an audit row that looks like a named patient booked."""
+    called = {"tool": 0}
+
+    def _should_not_run(**kw):
+        called["tool"] += 1
+        return {"confirmation_no": "AGS-SPOOF"}
+
+    monkeypatch.setattr(agent_tools, "_tool_book_appointment", _should_not_run)
+    result = agent_tools.dispatch(
+        "book_appointment",
+        {"patient_name": "David Thompson", "specialty": "cardiology"},
+        scope={"role": "patient_chat"},  # no active patient
+    )
+    err = result.get("error") or ""
+    assert "Not authorized" in err
+    assert "Walk-in Patient" in err
+    assert called["tool"] == 0
+
+
+def test_book_appointment_denied_when_pre_auth_lookup_fails(monkeypatch):
+    """Fail closed: if identity can't be verified for an active session,
+    refuse to book rather than risk a misattributed booking."""
+    monkeypatch.setattr("tools.ehr.find_patient_by_name", _raise_ehr_failure)
+    called = {"tool": 0}
+
+    def _should_not_run(**kw):
+        called["tool"] += 1
+        return {"confirmation_no": "AGS-X"}
+
+    monkeypatch.setattr(agent_tools, "_tool_book_appointment", _should_not_run)
+    result = agent_tools.dispatch(
+        "book_appointment",
+        {"patient_name": "Anjali Mehra", "specialty": "cardiology"},
+        scope={"role": "patient_chat", "patient_id": "fhir:anjali-mehra"},
+    )
+    assert "Not authorized" in (result.get("error") or "")
+    assert called["tool"] == 0
 
 
 def test_medical_search_still_works_in_patient_chat(monkeypatch):
@@ -642,14 +753,15 @@ def test_find_patient_denied_when_no_active_patient(monkeypatch):
     assert "Not authorized" in (result.get("error") or "")
 
 
-def test_walk_in_can_still_book_a_doctor(monkeypatch):
-    """The blanket no-active-patient policy must not break walk-in booking.
-    book_appointment is not in the PHI-reading set."""
+def test_walk_in_can_still_book_under_sentinel(monkeypatch):
+    """Walk-in (no active patient) can book, but only under the
+    "Walk-in Patient" sentinel name (issue #7). The match is
+    case-insensitive."""
     monkeypatch.setattr(agent_tools, "_tool_book_appointment",
                         lambda **kw: {"confirmation_no": "AGS-NEW",
                                        "slot_id": 1})
     result = agent_tools.dispatch(
-        "book_appointment", {"patient_name": "Walk-In Person",
+        "book_appointment", {"patient_name": "Walk-in Patient",
                               "specialty": "general_practice"},
         scope={"role": "patient_chat"},
     )
