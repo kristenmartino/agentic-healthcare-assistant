@@ -2,6 +2,13 @@
 
 Combines the structured EHR record with FAISS-retrieved chunks from the
 patient's PDF reports, then asks the LLM for a concise summary.
+
+PHI scope: this is the patient-facing read path, so it enforces the same
+fail-closed authorization the agent dispatcher does (nodes/agent_tools.py).
+In `patient_chat` role a walk-in (no authenticated active patient) cannot
+read any existing record, and an authenticated patient can only read their
+OWN. Clinician/admin callers — the Doctor View, MCP, and the agent loop's
+post-authorization delegation — are unrestricted.
 """
 from __future__ import annotations
 
@@ -11,16 +18,45 @@ from config import load_settings
 from llm import LLMUnavailable, chat
 from prompts import HISTORY_SUMMARY_PROMPT
 from state import HealthcareState
+from tools.audit import log_access
 from tools.ehr import find_patient_by_name, get_patient_clinical_context
 from tools.fhir_client import condition_summary
 from tools.vector_index import search_index
 
 logger = logging.getLogger(__name__)
 
+# Roles that may read any patient's history. patient_chat is scoped to the
+# authenticated active patient; everything else here is a trusted caller.
+_UNRESTRICTED_ROLES = {"clinician", "admin"}
+
+
+def _phi_refusal(message: str, reason: str, patient_name: str) -> dict:
+    """Deterministic refusal for a denied PHI read.
+
+    Returns a `history_summary` (relayed by the composer) plus a denied
+    audit entry. No record lookup result and no LLM summary are produced,
+    so nothing about the requested patient leaks back to the caller.
+    """
+    log_access(
+        "patient_chat", "ehr.read", "Patient", None,
+        outcome="denied",
+        details={"reason": reason, "search_name": patient_name},
+    )
+    return {
+        "history_summary": message,
+        "tool_log": [{
+            "node": "history",
+            "result": "denied",
+            "reason": reason,
+        }],
+    }
+
 
 def history_node(state: HealthcareState) -> dict:
     settings = load_settings()
     patient_name = state.get("patient_name")
+    role = (state.get("role") or "patient_chat").lower()
+    active_pid = state.get("patient_id")
 
     if not patient_name:
         return {
@@ -32,8 +68,33 @@ def history_node(state: HealthcareState) -> dict:
             }],
         }
 
+    # PHI-scope guard (patient_chat only). A walk-in session has no
+    # authenticated identity, so it gets no record reads at all — denied
+    # before any lookup so the requested patient's existence never leaks.
+    if role not in _UNRESTRICTED_ROLES and not active_pid:
+        return _phi_refusal(
+            "I can't share another patient's medical history. Medical records "
+            "are only available to the patient they belong to — please select "
+            "or sign in to your own patient profile to view your history.",
+            reason="walk_in_no_active_patient",
+            patient_name=patient_name,
+        )
+
     # 1. Look up structured record
     record = find_patient_by_name(patient_name, settings, actor="patient_chat")
+
+    # An authenticated patient_chat caller may only read their OWN record.
+    # If the requested name resolves to a different patient (or to nothing),
+    # refuse rather than serve or probe.
+    if role not in _UNRESTRICTED_ROLES and (
+        record is None or record.get("patient_id") != active_pid
+    ):
+        return _phi_refusal(
+            "I can only show your own medical history, not another patient's "
+            "record.",
+            reason="cross_patient",
+            patient_name=patient_name,
+        )
     record_block = ""
     if record:
         parts = [f"Name: {record['name']}"]
