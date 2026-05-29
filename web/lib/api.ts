@@ -10,8 +10,46 @@ const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE?.replace(/\/$/, "") ||
   "http://localhost:8000";
 
+// The Fly.io backend scales to zero and `suspend`-resumes; a genuine cold boot
+// (fresh deploy / long idle) can still briefly reset or time-out connections
+// while the machine wakes. Retry transient failures (network errors +
+// 502/503/504) with backoff so a cold load self-heals instead of surfacing as
+// a hard "Backend unreachable".
+const RETRY_BACKOFF_MS = [1000, 2000, 3000, 5000, 8000, 8000, 8000, 8000, 8000]; // ~50s budget
+const RETRY_STATUSES = new Set([502, 503, 504]);
+const ATTEMPT_TIMEOUT_MS = 15000;
+
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ATTEMPT_TIMEOUT_MS);
+    try {
+      const r = await fetch(url, { ...init, signal: ctrl.signal });
+      clearTimeout(timer);
+      // Gateway errors are emitted by the proxy while the machine wakes — retry.
+      if (RETRY_STATUSES.has(r.status) && attempt < RETRY_BACKOFF_MS.length) {
+        await sleep(RETRY_BACKOFF_MS[attempt]);
+        continue;
+      }
+      return r;
+    } catch (e) {
+      // Network error or per-attempt timeout (AbortError) — retry if budget left.
+      clearTimeout(timer);
+      lastErr = e;
+      if (attempt < RETRY_BACKOFF_MS.length) {
+        await sleep(RETRY_BACKOFF_MS[attempt]);
+        continue;
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("Failed to fetch");
+}
+
 async function get<T>(path: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(`${API_BASE}${path}`, {
+  const r = await fetchWithRetry(`${API_BASE}${path}`, {
     ...init,
     headers: { Accept: "application/json", ...(init?.headers || {}) },
     cache: "no-store",
