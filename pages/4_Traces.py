@@ -130,6 +130,15 @@ def _matches(e: dict) -> bool:
 filtered = [e for e in events if _matches(e)]
 
 
+def _slowest_node(e: dict) -> str:
+    """Most expensive node for this run, from the per-node timing breakdown."""
+    timings = e.get("node_timings") or {}
+    if not timings:
+        return "—"
+    name, ms = max(timings.items(), key=lambda kv: kv[1])
+    return f"{name} ({ms:.0f}ms)"
+
+
 # ---------- Events table ----------
 
 st.subheader(f"Events ({len(filtered)})")
@@ -146,6 +155,8 @@ else:
             "user_input": (e.get("user_input") or "")[:80],
             "intents": ", ".join(e.get("intents") or []),
             "latency_s": e.get("latency_seconds"),
+            "slowest_node": _slowest_node(e),
+            "cold": "🧊" if e.get("cold_start") else "",
             "search": e.get("search_backend") or "—",
             "emergency": "🚨" if e.get("is_emergency") else "",
             "error": "❌" if (e.get("error") or e.get("had_error")) else "",

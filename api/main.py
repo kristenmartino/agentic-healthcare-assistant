@@ -20,6 +20,7 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
@@ -88,6 +89,19 @@ def _bootstrap() -> None:
     # the import cost.
     app.state.workflow = build_workflow(with_checkpoint=True)
     app.state.settings = settings
+    # Construct the LLM client at boot so the first request doesn't pay client
+    # setup on the hot path. Cheap + best-effort (no network call here).
+    try:
+        from llm import _get_client
+        _get_client()
+    except Exception as exc:
+        logger.warning("LLM client warmup skipped: %s", exc)
+    # Cold-start markers: boot timestamp + a first-request flag. Under Fly's
+    # `suspend` the Python process survives resume, so `served_request` stays
+    # True across resumes — `cold_start` therefore flags only genuine process
+    # boots, which is what we want to tell apart from warm/resumed requests.
+    app.state.boot_perf = perf_counter()
+    app.state.served_request = False
     logger.info("API ready. LLM=%s EHR=%s Search=%s",
                 settings.llm_provider, settings.ehr_backend,
                 configured_backend(settings.tavily_api_key))
@@ -275,6 +289,11 @@ async def chat_stream(req: ChatRequest):
     thread_id = req.thread_id or "anonymous"
     config = {"configurable": {"thread_id": thread_id}}
 
+    # True only for the first request handled since this process booted — the
+    # signal that distinguishes a genuine cold start from a warm/resumed one.
+    cold_start = not getattr(app.state, "served_request", False)
+    app.state.served_request = True
+
     async def event_stream() -> AsyncIterator[bytes]:
         accumulated: dict[str, Any] = {}
         streamed_text = ""
@@ -319,7 +338,11 @@ async def chat_stream(req: ChatRequest):
                             })
                             if isinstance(partial, dict):
                                 for k, v in partial.items():
-                                    if isinstance(v, list) and isinstance(
+                                    if k == "node_timings" and isinstance(v, dict):
+                                        merged = dict(accumulated.get(k) or {})
+                                        merged.update(v)
+                                        accumulated[k] = merged
+                                    elif isinstance(v, list) and isinstance(
                                             accumulated.get(k), list):
                                         accumulated[k] = accumulated[k] + v
                                     else:
@@ -361,6 +384,14 @@ async def chat_stream(req: ChatRequest):
                     "node_count": len(accumulated.get("tool_log") or []),
                     "search_backend": effective_backend(_raw_info) if _raw_info else None,
                     "had_error": bool(accumulated.get("error")),
+                    # Latency breakdown for issue #12: per-node durations plus
+                    # cold-start markers. Compare sum(node_timings) against the
+                    # run's latency_seconds (and the user-perceived total) to
+                    # see how much is in-request work vs Fly boot/resume.
+                    "node_timings": accumulated.get("node_timings"),
+                    "cold_start": cold_start,
+                    "seconds_since_boot": round(
+                        perf_counter() - getattr(app.state, "boot_perf", perf_counter()), 3),
                 })
                 yield _sse("done", {
                     "response": response,

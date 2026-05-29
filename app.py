@@ -234,7 +234,11 @@ with col_main:
                                 )
                                 if isinstance(partial, dict):
                                     for k, v in partial.items():
-                                        if isinstance(v, list) and isinstance(
+                                        if k == "node_timings" and isinstance(v, dict):
+                                            merged = dict(accumulated.get(k) or {})
+                                            merged.update(v)
+                                            accumulated[k] = merged
+                                        elif isinstance(v, list) and isinstance(
                                                 accumulated.get(k), list):
                                             accumulated[k] = accumulated[k] + v
                                         else:
@@ -289,6 +293,8 @@ with col_main:
                     "search_backend": effective_backend(_raw_info) if _raw_info else None,
                     "node_count": len(accumulated.get("tool_log") or []),
                     "had_error": bool(accumulated.get("error")),
+                    # Per-node latency breakdown (issue #12).
+                    "node_timings": accumulated.get("node_timings"),
                 })
             except Exception as exc:
                 st.error(f"Workflow error: {exc}")
