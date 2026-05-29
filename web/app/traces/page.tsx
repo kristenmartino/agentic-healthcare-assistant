@@ -2,7 +2,6 @@
 import * as React from "react";
 import { Activity, AlertTriangle, BarChart3, Timer } from "lucide-react";
 
-import { AppShell } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api";
@@ -10,11 +9,7 @@ import type { TraceEvent, TraceSummary } from "@/lib/api";
 import { formatTimestamp } from "@/lib/utils";
 
 export default function TracesPage() {
-  return (
-    <AppShell>
-      <TracesView />
-    </AppShell>
-  );
+  return <TracesView />;
 }
 
 function TracesView() {

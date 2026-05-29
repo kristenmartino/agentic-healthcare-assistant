@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 
+import { AppShell } from "@/components/app-shell";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
@@ -38,7 +39,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           enableSystem
           disableTransitionOnChange
         >
-          {children}
+          {/* AppShell lives in the root layout so it mounts ONCE and persists
+              across route changes — navigating to /audit, /traces, /about and
+              back no longer remounts it (which used to refetch patients/config
+              and flicker the patient selection). */}
+          <AppShell>{children}</AppShell>
         </ThemeProvider>
       </body>
     </html>
