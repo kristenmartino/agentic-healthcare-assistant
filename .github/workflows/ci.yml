@@ -73,3 +73,43 @@ jobs:
         # criterion catches real regressions without flaking on stub.
         run: |
           python -m eval.adversarial || (echo "::error::adversarial eval red-line failure" && exit 1)
+
+  # Auto-deploy the FastAPI service to Fly.io after tests pass on main.
+  # This closes the "merged but not live" gap that left the PHI-scope fix
+  # un-deployed: when deploys are manual, a security fix can sit on main
+  # while production still runs the vulnerable code. Skips cleanly (with a
+  # warning, not a failure) until the FLY_API_TOKEN repo secret is added,
+  # so it never reds-out main before the deploy credential is configured.
+  deploy:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    concurrency:
+      group: deploy-fly
+      cancel-in-progress: false
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - name: Check for deploy credential
+        id: check
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::FLY_API_TOKEN secret is not set — skipping deploy. Add it (repo Settings → Secrets and variables → Actions) to enable auto-deploy to Fly.io."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.check.outputs.present == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up flyctl
+        if: steps.check.outputs.present == 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly.io
+        if: steps.check.outputs.present == 'true'
+        # Uses fly.toml at the repo root (build = api/Dockerfile). Remote
+        # builder so the runner doesn't need a local Docker daemon.
+        run: flyctl deploy --remote-only

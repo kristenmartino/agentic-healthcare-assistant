@@ -111,6 +111,12 @@ export type TraceEvent = {
   latency_seconds?: number;
   error?: string;
   error_type?: string;
+  // Latency breakdown (issue #12): per-node wall-clock durations (ms) plus
+  // cold-start markers written by the API. Lets you tell a Fly boot apart
+  // from slow in-request LLM hops.
+  node_timings?: Record<string, number> | null;
+  cold_start?: boolean;
+  seconds_since_boot?: number;
 };
 
 export type TraceSummary = {
