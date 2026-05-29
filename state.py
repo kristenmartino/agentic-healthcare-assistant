@@ -70,6 +70,18 @@ def _merge_error(left: str | None, right: str | None) -> str | None:
     return f"{left} · {right}"
 
 
+def _merge_timings(
+    left: dict[str, float] | None, right: dict[str, float] | None
+) -> dict[str, float]:
+    """Reducer for `node_timings` — union the per-node durations so parallel
+    fan-out branches don't clobber each other's entries."""
+    if not left:
+        return right or {}
+    if not right:
+        return left
+    return {**left, **right}
+
+
 class HealthcareState(TypedDict, total=False):
     # User input + identification
     user_input: str
@@ -117,3 +129,7 @@ class HealthcareState(TypedDict, total=False):
     error: Annotated[str | None, _merge_error]
     tool_log: Annotated[list[dict[str, Any]], add]   # for the logs UI
     history: list[dict[str, str]]                    # conversation history (Streamlit feeds this)
+
+    # Per-node wall-clock durations (ms), keyed by node name. Populated by the
+    # timing wrapper in graph.py so the trace log can show where time goes.
+    node_timings: Annotated[dict[str, float], _merge_timings]

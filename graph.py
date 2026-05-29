@@ -53,6 +53,7 @@ keeps state across Streamlit reruns and shared between both strategies.
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 
 from langgraph.graph import END, START, StateGraph
 
@@ -115,20 +116,39 @@ def _route_after_classify(state: HealthcareState) -> list[str]:
     return targets
 
 
+def _timed(name: str, fn):
+    """Wrap a node so its wall-clock duration (ms) is recorded into
+    `node_timings`. Per-node timing is the data issue #12 needs to tell a
+    cold boot apart from slow in-request LLM hops; the JSONL trace and the
+    Traces page surface it. The wrapper is transparent — it merges one
+    `{name: ms}` entry into whatever dict the node already returns.
+    """
+    def wrapped(state: HealthcareState) -> dict:
+        t0 = perf_counter()
+        result = fn(state)
+        elapsed_ms = round((perf_counter() - t0) * 1000, 1)
+        if isinstance(result, dict):
+            return {**result, "node_timings": {name: elapsed_ms}}
+        return result
+
+    wrapped.__name__ = getattr(fn, "__name__", name)
+    return wrapped
+
+
 def build_workflow(*, settings: Settings | None = None, with_checkpoint: bool = True):
     """Build and compile the Healthcare Assistant LangGraph workflow."""
     settings = settings or load_settings()
 
     workflow = StateGraph(HealthcareState)
 
-    workflow.add_node("safety", safety_node)
-    workflow.add_node("agent_loop", agent_loop_node)
-    workflow.add_node("classify_intent", classify_intent)
-    workflow.add_node("booking_node", booking_node)
-    workflow.add_node("records_node", records_node)
-    workflow.add_node("history_node", history_node)
-    workflow.add_node("medical_search_node", medical_search_node)
-    workflow.add_node("compose_response", compose_response_node)
+    workflow.add_node("safety", _timed("safety", safety_node))
+    workflow.add_node("agent_loop", _timed("agent_loop", agent_loop_node))
+    workflow.add_node("classify_intent", _timed("classify_intent", classify_intent))
+    workflow.add_node("booking_node", _timed("booking_node", booking_node))
+    workflow.add_node("records_node", _timed("records_node", records_node))
+    workflow.add_node("history_node", _timed("history_node", history_node))
+    workflow.add_node("medical_search_node", _timed("medical_search_node", medical_search_node))
+    workflow.add_node("compose_response", _timed("compose_response", compose_response_node))
 
     workflow.add_edge(START, "safety")
 
