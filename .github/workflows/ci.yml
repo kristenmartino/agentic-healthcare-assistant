@@ -83,7 +83,12 @@ jobs:
   deploy:
     needs: lint-and-test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Deploy on merge to main, or on a manual "Run workflow" against main
+    # (Actions tab → workflow_dispatch) — the latter is the on-demand
+    # redeploy path when no code changed (e.g. just added FLY_API_TOKEN).
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
     concurrency:
       group: deploy-fly
       cancel-in-progress: false
