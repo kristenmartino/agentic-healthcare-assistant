@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from time import perf_counter
@@ -25,7 +26,7 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 # Allow `python -m api.main` from the project root
@@ -77,34 +78,101 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _bootstrap() -> None:
-    """Build the workflow once at startup; pre-warm the slot table."""
+    """Pre-warm the slot table; build the workflow OFF the startup critical path.
+
+    `suspend` keeps the built workflow in memory across resumes, so the hot
+    path is covered there. But a *genuine* cold boot — every fresh deploy, or
+    after Fly fully stops a long-idle machine — still pays the full container
+    start → uvicorn → workflow build (~40s on a cold shared CPU). Building it
+    eagerly here blocked the server from binding for that whole window, during
+    which Fly's proxy can't reach the app and drops requests (the frontend then
+    shows "Backend unreachable"). So we return from startup immediately —
+    /health, /config, /patients bind in ~1s — and warm the workflow + LLM
+    client in a background thread; /chat lazy-builds via _get_workflow() if a
+    request beats the warmup.
+    """
     settings = load_settings()
+    app.state.settings = settings
+    app.state.workflow = None
+    # Warmup observability: the workflow now builds in a background thread, so
+    # the service can answer /health before it's actually ready — and a build
+    # *failure* would otherwise stay invisible until the first /chat. Track the
+    # build's lifecycle here so /ready and /config can surface it loudly.
+    # `workflow_error` holds only the exception TYPE NAME (never the message),
+    # so the readiness signal can never leak PII or secrets.
+    app.state.workflow_status = "warming"
+    app.state.workflow_error = None
     # Top up the appointments DB so the first booking call doesn't fail
     # against a stale slot table.
     try:
         ensure_future_slots(settings.appointments_db_path)
     except Exception as exc:
         logger.warning("ensure_future_slots failed at startup: %s", exc)
-    # Eagerly build the LangGraph workflow so the first request doesn't pay
-    # the import cost.
-    app.state.workflow = build_workflow(with_checkpoint=True)
-    app.state.settings = settings
-    # Construct the LLM client at boot so the first request doesn't pay client
-    # setup on the hot path. Cheap + best-effort (no network call here).
-    try:
-        from llm import _get_client
-        _get_client()
-    except Exception as exc:
-        logger.warning("LLM client warmup skipped: %s", exc)
+    # Build the workflow + construct the LLM client without blocking startup
+    # (and therefore the health check / proxy reachability).
+    threading.Thread(
+        target=_warm_singletons, name="startup-warmup", daemon=True
+    ).start()
     # Cold-start markers: boot timestamp + a first-request flag. Under Fly's
     # `suspend` the Python process survives resume, so `served_request` stays
     # True across resumes — `cold_start` therefore flags only genuine process
     # boots, which is what we want to tell apart from warm/resumed requests.
     app.state.boot_perf = perf_counter()
     app.state.served_request = False
-    logger.info("API ready. LLM=%s EHR=%s Search=%s",
+    logger.info("API ready. LLM=%s EHR=%s Search=%s (warming workflow in background)",
                 settings.llm_provider, settings.ehr_backend,
                 configured_backend(settings.tavily_api_key))
+
+
+_workflow_lock = threading.Lock()
+
+
+def _get_workflow():
+    """Return the compiled LangGraph workflow, building it once on first use.
+
+    Warmed in a background thread at startup and lazy-built on the first /chat
+    if a request arrives before the warmup finishes. Thread-safe via
+    double-checked locking: concurrent callers share a single build.
+    """
+    wf = getattr(app.state, "workflow", None)
+    if wf is not None:
+        return wf
+    with _workflow_lock:
+        wf = getattr(app.state, "workflow", None)
+        if wf is None:
+            logger.info("Building LangGraph workflow…")
+            try:
+                wf = build_workflow(with_checkpoint=True)
+            except Exception as exc:
+                # Record the failure so /ready and /config report "error"
+                # instead of silently looking healthy. Store only the
+                # exception TYPE NAME (redacted) — never str(exc), which could
+                # carry PII or secrets — then re-raise so the caller still sees
+                # the original error.
+                app.state.workflow_status = "error"
+                app.state.workflow_error = type(exc).__name__
+                logger.exception("LangGraph workflow build failed.")
+                raise
+            app.state.workflow = wf
+            app.state.workflow_status = "ready"
+            app.state.workflow_error = None
+            logger.info("LangGraph workflow ready.")
+        return wf
+
+
+def _warm_singletons() -> None:
+    """Background startup warmup: build the workflow and construct the LLM
+    client so the first real request pays neither cost. Best-effort."""
+    try:
+        _get_workflow()
+    except Exception as exc:
+        logger.warning("workflow warmup failed: %s", exc)
+    # Construct the LLM client (cheap, no network call) off the hot path too.
+    try:
+        from llm import _get_client
+        _get_client()
+    except Exception as exc:
+        logger.warning("LLM client warmup skipped: %s", exc)
 
 
 def _settings():
@@ -163,7 +231,38 @@ def get_config() -> dict:
         "langsmith_enabled": langsmith_enabled(),
         "langsmith_project": langsmith_project(),
         "prompt_caching_enabled": s.enable_prompt_caching,
+        # Workflow warmup state for the dashboard's status row. Read defensively
+        # so /config never 500s even if the markers somehow aren't set yet.
+        # workflow_error is a redacted exception type name (or null), not a
+        # message — safe to expose to the frontend.
+        "workflow_status": getattr(app.state, "workflow_status", "unknown"),
+        "workflow_error": getattr(app.state, "workflow_error", None),
     }
+
+
+@app.get("/ready")
+def ready():
+    """Readiness probe — distinct from /health (liveness).
+
+    /health stays 200 throughout warmup so Fly's machine healthcheck never
+    recycles a machine that is merely still building its workflow. /ready is
+    the *readiness* signal: 200 only once the LangGraph workflow has finished
+    building, 503 while warming or after a build failure. Orchestration that
+    wants to gate traffic on actual readiness (or a dashboard badge) should
+    poll this, not /health. The body always carries the status fields so a 503
+    is still diagnosable.
+    """
+    status = getattr(app.state, "workflow_status", "unknown")
+    error = getattr(app.state, "workflow_error", None)
+    is_ready = status == "ready"
+    return JSONResponse(
+        status_code=200 if is_ready else 503,
+        content={
+            "ready": is_ready,
+            "workflow_status": status,
+            "workflow_error": error,
+        },
+    )
 
 
 # ---------- patients ----------
@@ -274,7 +373,9 @@ async def chat_stream(req: ChatRequest):
     and tokens into the chat bubble; `done` carries the full state for the
     right-hand panel (sources, audit, etc.).
     """
-    workflow = app.state.workflow
+    # Lazy-build on first chat if the background warmup hasn't finished yet;
+    # run the (synchronous) build in a thread so it never blocks the event loop.
+    workflow = await asyncio.to_thread(_get_workflow)
     # Thread prior turns so the composer (graph mode) and agent_loop (react
     # mode) can resolve follow-ups. The client sends the authoritative
     # conversation; we cap and overwrite rather than relying on the

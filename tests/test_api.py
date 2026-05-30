@@ -8,13 +8,23 @@ end-to-end manually.
 from __future__ import annotations
 
 import json
+import threading
+import time
 
 import pytest
 
 fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from api.main import _content_to_text, _node_label, _sse, _summarize_partial, app  # noqa: E402
+import api.main as api_main  # noqa: E402
+from api.main import (  # noqa: E402
+    _content_to_text,
+    _get_workflow,
+    _node_label,
+    _sse,
+    _summarize_partial,
+    app,
+)
 
 
 @pytest.fixture(scope="module")
@@ -217,3 +227,218 @@ def test_chat_rejects_malformed_history(client):
         "history": [{"role": "wizard", "content": "x"}],
     })
     assert r.status_code == 422
+
+
+# ---------- workflow warmup status + readiness (PR #23 observability) ----------
+
+@pytest.fixture
+def restore_warmup_state():
+    """Snapshot and restore everything these warmup tests mutate.
+
+    The module-scoped `client` fixture runs FastAPI startup once, which warms
+    (and on 3.11/3.12 actually builds) the real workflow into app.state. These
+    tests poke app.state.workflow / workflow_status / workflow_error and
+    monkeypatch api_main.build_workflow directly (not via the function-scoped
+    `monkeypatch`, because some assertions run on background threads), so we
+    must put all of it back afterward or later tests get a poisoned singleton.
+    """
+    saved = {
+        "workflow": getattr(app.state, "workflow", None),
+        "workflow_status": getattr(app.state, "workflow_status", "warming"),
+        "workflow_error": getattr(app.state, "workflow_error", None),
+        "build_workflow": api_main.build_workflow,
+    }
+    try:
+        yield
+    finally:
+        app.state.workflow = saved["workflow"]
+        app.state.workflow_status = saved["workflow_status"]
+        app.state.workflow_error = saved["workflow_error"]
+        api_main.build_workflow = saved["build_workflow"]
+
+
+def test_get_workflow_builds_exactly_once_under_concurrency(restore_warmup_state):
+    """Double-checked locking: N concurrent callers trigger a single build and
+    all receive the same object.
+    """
+    sentinel = object()
+    calls = {"n": 0}
+    calls_lock = threading.Lock()
+
+    def slow_build(*args, **kwargs):
+        # Count + briefly sleep so threads genuinely overlap inside the lock
+        # contention window, exercising the double-checked path.
+        with calls_lock:
+            calls["n"] += 1
+        time.sleep(0.05)
+        return sentinel
+
+    api_main.build_workflow = slow_build
+    # Force a fresh, unbuilt state so _get_workflow actually builds.
+    app.state.workflow = None
+    app.state.workflow_status = "warming"
+    app.state.workflow_error = None
+
+    results: list = []
+    results_lock = threading.Lock()
+    start = threading.Event()
+
+    def worker():
+        start.wait()  # release all threads at once to maximize contention
+        wf = _get_workflow()
+        with results_lock:
+            results.append(wf)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    start.set()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert all(not t.is_alive() for t in threads), "a worker thread hung"
+    assert calls["n"] == 1, f"build_workflow ran {calls['n']} times, expected 1"
+    assert len(results) == 8
+    assert all(r is sentinel for r in results), "threads got different objects"
+    assert app.state.workflow is sentinel
+    assert app.state.workflow_status == "ready"
+    assert app.state.workflow_error is None
+
+
+def test_get_workflow_failure_path_records_error_then_recovers(restore_warmup_state):
+    """A build failure flips status to 'error' and records the redacted
+    exception TYPE NAME; a subsequent successful build recovers to 'ready'.
+    """
+    class WarmupBoom(RuntimeError):
+        pass
+
+    def boom_build(*args, **kwargs):
+        raise WarmupBoom("secret-ish detail that must not be exposed")
+
+    api_main.build_workflow = boom_build
+    app.state.workflow = None
+    app.state.workflow_status = "warming"
+    app.state.workflow_error = None
+
+    with pytest.raises(WarmupBoom):
+        _get_workflow()
+
+    assert app.state.workflow is None
+    assert app.state.workflow_status == "error"
+    # The recorded error is the exception type name (non-empty string), never
+    # the message — so no PII / secret leakage.
+    assert isinstance(app.state.workflow_error, str)
+    assert app.state.workflow_error == "WarmupBoom"
+    assert "secret-ish" not in app.state.workflow_error
+
+    # Now restore a working build and confirm recovery on the next call.
+    sentinel = object()
+
+    def good_build(*args, **kwargs):
+        return sentinel
+
+    api_main.build_workflow = good_build
+    app.state.workflow = None
+    app.state.workflow_status = "warming"
+
+    wf = _get_workflow()
+    assert wf is sentinel
+    assert app.state.workflow_status == "ready"
+    assert app.state.workflow_error is None
+
+
+def test_ready_endpoint_200_when_ready(client, restore_warmup_state):
+    """/ready returns 200 + {"ready": true} only when status == 'ready'."""
+    app.state.workflow_status = "ready"
+    app.state.workflow_error = None
+    r = client.get("/ready")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ready"] is True
+    assert body["workflow_status"] == "ready"
+    assert body["workflow_error"] is None
+
+
+def test_ready_endpoint_503_when_error(client, restore_warmup_state):
+    """/ready returns 503 + {"ready": false} after a build failure, and the
+    body still carries the (redacted) status fields for diagnosis.
+    """
+    app.state.workflow_status = "error"
+    app.state.workflow_error = "WarmupBoom"
+    r = client.get("/ready")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["ready"] is False
+    assert body["workflow_status"] == "error"
+    assert body["workflow_error"] == "WarmupBoom"
+
+
+def test_ready_endpoint_503_while_warming(client, restore_warmup_state):
+    """/ready returns 503 + {"ready": false} during warmup."""
+    app.state.workflow_status = "warming"
+    app.state.workflow_error = None
+    r = client.get("/ready")
+    assert r.status_code == 503
+    assert r.json()["ready"] is False
+    assert r.json()["workflow_status"] == "warming"
+
+
+def test_config_includes_workflow_status_fields(client):
+    """/config surfaces workflow_status + workflow_error (non-failing reads)."""
+    r = client.get("/config")
+    assert r.status_code == 200
+    body = r.json()
+    assert "workflow_status" in body
+    assert "workflow_error" in body
+    # workflow_error is either null or a redacted type-name string — never a
+    # secret-bearing message.
+    assert body["workflow_error"] is None or isinstance(body["workflow_error"], str)
+
+
+def test_startup_does_not_build_workflow_synchronously(monkeypatch, restore_warmup_state):
+    """Kristen's ask: startup must NOT call build_workflow on the calling
+    thread. Non-flaky structural guarantee — we assert the build, if it ran at
+    all by the time startup returned, ran on the background 'startup-warmup'
+    thread, and that _bootstrap returned with status in {"warming","ready"}
+    (i.e. it did not block synchronously building on the main/calling thread).
+
+    `restore_warmup_state` puts app.state.workflow back afterward so the
+    re-entered startup here (which sets app.state.workflow to our stub sentinel)
+    can't poison the module-scoped `client` for any later test.
+    """
+    build_threads: list[str] = []
+    sentinel = object()
+
+    def recording_build(*args, **kwargs):
+        build_threads.append(threading.current_thread().name)
+        return sentinel
+
+    monkeypatch.setattr(api_main, "build_workflow", recording_build)
+    monkeypatch.setenv("EHR_BACKEND", "fhir_fixture")
+
+    calling_thread = threading.current_thread().name
+
+    # Fresh startup/shutdown cycle on the same app object.
+    with TestClient(app) as c:
+        # Immediately after startup returned, the status must already be a
+        # warmup-lifecycle value — proving _bootstrap returned without doing a
+        # synchronous build that would have raised/blocked on the caller.
+        assert getattr(app.state, "workflow_status", None) in {"warming", "ready"}
+        # The build must NOT have run on the calling/main thread.
+        assert calling_thread not in build_threads, (
+            "build_workflow ran synchronously on the startup-calling thread"
+        )
+        # Give the daemon warmup thread a brief, bounded window to run so we can
+        # positively confirm it builds on the named background thread. This is a
+        # best-effort *positive* check; the structural guarantees above are the
+        # non-flaky ones.
+        deadline = time.time() + 2.0
+        while not build_threads and time.time() < deadline:
+            time.sleep(0.02)
+        if build_threads:
+            assert build_threads[0] == "startup-warmup", (
+                f"warmup build ran on {build_threads[0]!r}, "
+                "expected the 'startup-warmup' background thread"
+            )
+        # /ready should be reachable regardless of warmup progress.
+        assert c.get("/ready").status_code in (200, 503)
