@@ -143,4 +143,69 @@ describe("fetchWithRetry", () => {
     // Bounded by the attempt schedule / deadline — never unbounded.
     expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(10);
   });
+
+  it("rejects immediately with the caller's reason when the signal is already aborted (no fetch)", async () => {
+    // A caller that has already given up (e.g. component unmounted before the
+    // request started) must short-circuit before any network call.
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const reason = new DOMException("cancelled before start", "AbortError");
+    const ctrl = new AbortController();
+    ctrl.abort(reason);
+
+    await expect(
+      pump(fetchWithRetry("https://x.test/health", { signal: ctrl.signal })),
+    ).rejects.toBe(reason);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stops promptly with the caller's reason when aborted during an in-flight attempt", async () => {
+    // The footgun the review flagged: a caller abort must be terminal, not
+    // retried like a transient failure. Here the attempt hangs until its
+    // signal aborts; we trip the CALLER signal mid-flight and expect a prompt
+    // rejection with the caller's reason and NO further attempts.
+    const abortError = () => new DOMException("Aborted", "AbortError");
+    const reason = new DOMException("user navigated away", "AbortError");
+    const ctrl = new AbortController();
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) return reject(abortError());
+        signal?.addEventListener("abort", () => reject(abortError()), {
+          once: true,
+        });
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Abort the caller well before the 15s per-attempt timeout would fire.
+    setTimeout(() => ctrl.abort(reason), 100);
+
+    await expect(
+      pump(fetchWithRetry("https://x.test/health", { signal: ctrl.signal })),
+    ).rejects.toBe(reason);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops retrying when the caller aborts during a backoff sleep", async () => {
+    // Abort lands BETWEEN attempts, while we're waiting out the backoff. The
+    // abortable sleep must reject promptly with the caller's reason so the loop
+    // never makes the next attempt (the 200 mock is never reached).
+    const reason = new DOMException("cancelled mid-backoff", "AbortError");
+    const ctrl = new AbortController();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(503)) // attempt 0 → triggers backoff
+      .mockResolvedValue(jsonResponse(200)); // would succeed if we retried
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Fire during the ~1s backoff after the first 503.
+    setTimeout(() => ctrl.abort(reason), 500);
+
+    await expect(
+      pump(fetchWithRetry("https://x.test/health", { signal: ctrl.signal })),
+    ).rejects.toBe(reason);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
