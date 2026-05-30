@@ -28,16 +28,56 @@ const RETRY_BACKOFF_MS = [1000, 2000, 3000, 5000, 8000, 8000, 8000, 8000, 8000];
 const RETRY_STATUSES = new Set([502, 503, 504]);
 const ATTEMPT_TIMEOUT_MS = 15000;
 
-const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+// Resolve a signal's abort reason: prefer the caller's explicit reason, else a
+// standard AbortError for runtimes that leave `reason` undefined.
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("Aborted", "AbortError");
+}
+
+// Sleep that rejects immediately if `signal` aborts, so a cancelled caller
+// doesn't have to wait out a backoff interval before the loop notices. With no
+// signal it's a plain setTimeout. The abort listener is removed on BOTH paths
+// (normal resolve and abort) so a long-lived signal reused across calls never
+// accumulates dangling listeners.
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortReason(signal));
+      return;
+    }
+    let onAbort: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    if (signal) {
+      onAbort = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort!);
+        reject(abortReason(signal));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+  });
+}
 
 export async function fetchWithRetry(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
   const startedAt = Date.now();
+  // Caller-provided cancellation signal (e.g. a component unmounting mid-load).
+  // Normalize null → undefined so the optional-chaining guards read cleanly.
+  const callerSignal = init.signal ?? undefined;
   let lastErr: unknown;
 
   for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+    // Caller cancellation is TERMINAL — never start, or continue, work the
+    // caller has abandoned. Checked at the top of every iteration so an abort
+    // before the first attempt (or during a backoff sleep) short-circuits
+    // immediately instead of being retried like a transient failure.
+    if (callerSignal?.aborted) throw abortReason(callerSignal);
+
     const remaining = TOTAL_RETRY_BUDGET_MS - (Date.now() - startedAt);
     if (remaining <= 0) break;
 
@@ -49,21 +89,14 @@ export async function fetchWithRetry(
       Math.min(ATTEMPT_TIMEOUT_MS, remaining),
     );
 
-    // Compose the caller-provided signal (if any) with our internal timeout
-    // controller. Naively spreading `signal: ctrl.signal` would silently drop
-    // the caller's signal; instead we forward the caller's abort onto `ctrl`.
-    // Done manually with addEventListener (not AbortSignal.any) for broad
-    // browser support, and the listener is cleaned up in `finally`.
-    const callerSignal = init.signal;
+    // Compose the caller's signal onto this attempt's controller — don't just
+    // spread `signal: ctrl.signal`, which would silently drop the caller's.
+    // Manual addEventListener (not AbortSignal.any) for broad browser support;
+    // cleaned up in `finally`.
     let onCallerAbort: (() => void) | undefined;
-    if (callerSignal) {
-      if (callerSignal.aborted) {
-        ctrl.abort((callerSignal as AbortSignal).reason);
-      } else {
-        onCallerAbort = () =>
-          ctrl.abort((callerSignal as AbortSignal).reason);
-        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
-      }
+    if (callerSignal && !callerSignal.aborted) {
+      onCallerAbort = () => ctrl.abort(callerSignal.reason);
+      callerSignal.addEventListener("abort", onCallerAbort, { once: true });
     }
 
     try {
@@ -75,11 +108,16 @@ export async function fetchWithRetry(
           TOTAL_RETRY_BUDGET_MS - (Date.now() - startedAt),
         );
         if (sleepMs <= 0) return r; // budget exhausted — surface what we have
-        await sleep(sleepMs);
+        await sleep(sleepMs, callerSignal);
         continue;
       }
       return r;
     } catch (e) {
+      // Caller cancellation is terminal — don't spend retries on it. This also
+      // catches an abort that surfaced as the fetch rejecting: we tell it apart
+      // from our own per-attempt timeout abort (a transient failure worth
+      // retrying) by checking the caller signal directly.
+      if (callerSignal?.aborted) throw abortReason(callerSignal);
       // Network error or per-attempt timeout (AbortError) — retry if budget left.
       lastErr = e;
       if (attempt < RETRY_BACKOFF_MS.length) {
@@ -88,7 +126,7 @@ export async function fetchWithRetry(
           TOTAL_RETRY_BUDGET_MS - (Date.now() - startedAt),
         );
         if (sleepMs <= 0) break; // budget exhausted — stop retrying
-        await sleep(sleepMs);
+        await sleep(sleepMs, callerSignal);
         continue;
       }
     } finally {
