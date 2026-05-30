@@ -36,24 +36,27 @@ function abortReason(signal: AbortSignal): unknown {
 
 // Sleep that rejects immediately if `signal` aborts, so a cancelled caller
 // doesn't have to wait out a backoff interval before the loop notices. With no
-// signal it's a plain setTimeout.
+// signal it's a plain setTimeout. The abort listener is removed on BOTH paths
+// (normal resolve and abort) so a long-lived signal reused across calls never
+// accumulates dangling listeners.
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortReason(signal));
       return;
     }
-    const timer = setTimeout(resolve, ms);
+    let onAbort: (() => void) | undefined;
+    const timer = setTimeout(() => {
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
     if (signal) {
-      const sig = signal; // captured non-null for the closure
-      sig.addEventListener(
-        "abort",
-        () => {
-          clearTimeout(timer);
-          reject(abortReason(sig));
-        },
-        { once: true },
-      );
+      onAbort = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort!);
+        reject(abortReason(signal));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
     }
   });
 }
