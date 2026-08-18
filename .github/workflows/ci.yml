@@ -29,8 +29,13 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
+      # Pinned. An unpinned linter silently upgrades and fails unrelated PRs on
+      # rules that did not exist when the code was written — a sibling repo hit
+      # exactly that on 2026-07-27, when a new ruff began formatting fenced code
+      # blocks inside Markdown and started rejecting a file untouched since the
+      # initial commit. Upgrading ruff should be a deliberate edit here.
       - name: Install ruff
-        run: pip install ruff
+        run: pip install ruff==0.16.0
 
       - name: Ruff lint
         run: ruff check .
