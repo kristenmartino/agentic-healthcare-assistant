@@ -36,19 +36,31 @@ jobs:
         run: ruff check .
 
       - name: Install runtime + test deps
-        # Skip sentence-transformers (large; pulls torch). The graph already
-        # falls back to TF-IDF / numpy dot-product when not present, and our
-        # unit tests don't exercise the vector index. Skip langchain-groq /
-        # langchain-openai — no API key in CI; the stub provider handles it.
+        # Skip sentence-transformers, which is what drags in torch and the
+        # whole NVIDIA CUDA stack (torch, triton, nvidia-cublas, nvidia-cudnn,
+        # cuda-toolkit, transformers, tokenizers, safetensors) — gigabytes of
+        # GPU runtime on a CPU runner.
+        #
+        # This comment used to say the same thing while the step did the
+        # opposite: `pip install -r requirements.txt` succeeded, so the `||`
+        # fallback that omitted sentence-transformers never ran, and every CI
+        # job installed CUDA anyway. Filtering the requirement out is what
+        # actually implements the intent, and it keeps requirements.txt as the
+        # single source of truth rather than duplicating the list here.
+        #
+        # Safe because nothing under test imports it: tools/vector_index.py
+        # treats sentence-transformers as optional, and no test or eval
+        # exercises the vector index at all.
+        #
+        # The `||` fallback is gone deliberately. It never ran, and if the real
+        # install ever broke it would have quietly installed a DIFFERENT
+        # dependency set and let CI go green on it. A broken install should be
+        # loud.
         run: |
-          pip install -r requirements.txt \
-            || pip install \
-              langgraph langchain langchain-community \
-              langgraph-checkpoint-sqlite \
-              openpyxl pypdf pdfminer.six \
-              streamlit duckduckgo-search requests \
-              python-dotenv pydantic typing-extensions \
-              pytest responses
+          grep -q '^sentence-transformers' requirements.txt \
+            || echo "::warning::filter is stale — no sentence-transformers line in requirements.txt"
+          grep -v '^sentence-transformers' requirements.txt > /tmp/requirements-ci.txt
+          pip install -r /tmp/requirements-ci.txt
 
       - name: Run pytest
         env:
