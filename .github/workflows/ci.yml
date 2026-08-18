@@ -7,9 +7,20 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Supersede in-flight runs for the same PULL REQUEST only. Keyed by SHA on
+# push so a main run is never cancelled.
+#
+# It used to key on github.ref with cancel-in-progress unconditionally true,
+# which cancelled main runs — and this workflow's `deploy` job is what closes
+# the "merged but not live" gap described below. Two commits landing close
+# together cancelled the first run's deploy outright: observed 2026-07-27
+# (run 30308659083) and again 2026-08-18 (run 32154225792). Both self-healed
+# because the newer run happened to deploy a superset commit, but that is luck:
+# cancellation follows workflow START order, not commit order, so the run that
+# survives is not necessarily the one carrying the newest code.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint-and-test:
