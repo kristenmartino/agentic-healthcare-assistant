@@ -12,6 +12,12 @@ langchain-openai>=0.2.0        # cloud — fallback / alternative
 # RAG: embeddings + vector index
 sentence-transformers>=2.7.0
 faiss-cpu>=1.8.0
+# Backs the TF-IDF fallback in tools/vector_index.py, which is what runs when
+# sentence-transformers is absent. It used to arrive only as a transitive
+# dependency OF sentence-transformers, so the documented fallback vanished in
+# exactly the situation it exists for — including CI, which skips
+# sentence-transformers deliberately.
+scikit-learn>=1.3.0
 
 # Data I/O
 openpyxl>=3.1.0                # records.xlsx
