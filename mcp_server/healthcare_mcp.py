@@ -18,9 +18,10 @@ Tool list (every one returns JSON-serialisable dicts):
 - list_doctors(specialty?)
 - find_patient(name)
 - list_patients()
-- add_or_update_patient(name, age?, gender?, phone?, email?, address?, summary?)
+- upsert_patient(name, age?, gender?, phone?, email?, address?, summary?)
 - get_history(patient_name)
 - medical_search(query, top_k=4)
+- get_audit_log(patient_id?, action_prefix?, limit=50)
 """
 from __future__ import annotations
 

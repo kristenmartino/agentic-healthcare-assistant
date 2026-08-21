@@ -244,7 +244,7 @@ HealthcareAssistant/
 │   └── 2_Doctor_View.py            # 🩺 doctor-facing dashboard
 │
 ├── mcp_server/                     # stretch goal: expose tools via MCP
-│   ├── healthcare_mcp.py           # FastMCP server registering 7 tools
+│   ├── healthcare_mcp.py           # FastMCP server registering 8 tools
 │   └── __init__.py
 │
 ├── eval/
