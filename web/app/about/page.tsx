@@ -5,15 +5,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 const features = [
   {
     title: "FHIR R4 EHR backend",
-    body: "Pluggable EHR layer — SQLite for the course demo, FHIR R4 against any HAPI / AWS HealthLake / Microsoft FHIR server in production. Conditions are SNOMED-coded; Observations are LOINC-coded. History summaries cite these directly.",
+    body: "Pluggable EHR layer — SQLite for the course demo, a configurable FHIR R4 HTTP adapter and offline fixtures. Compatibility with a particular production server needs separate verification. Conditions are SNOMED-coded; Observations are LOINC-coded. History summaries cite these directly.",
   },
   {
     title: "PHI access audit log",
-    body: "Every patient-identifiable read or write produces one row in a separate SQLite DB (HIPAA 45 CFR 164.312(b) shape). The audit DB is intentionally distinct from the EHR DB — separation-of-duties so an EHR compromise can't silently erase the trail.",
+    body: "Patient-tool access is recorded in a separate SQLite file. This demonstrates an audit-log pattern, not HIPAA compliance or an independent security boundary. The demo uses synthetic records.",
   },
   {
-    title: "Clinical safety classifier",
-    body: "Pre-classifier between START and intent routing. Deterministic regex catches cardiac / stroke / suicide / anaphylaxis / severe-bleeding / altered-mental-status; emits a hardcoded 911/988/112/108 template and skips the LLM entirely. Informational guards suppress the obvious false positives.",
+    title: "Emergency-message rules",
+    body: "Pre-classifier between START and intent routing. Deterministic regex catches cardiac / stroke / suicide / anaphylaxis / severe-bleeding / altered-mental-status; emits a hardcoded 911/988/112/108 template and skips the LLM entirely. Informational guards cover selected false positives; these rules are not a validated clinical triage system.",
   },
   {
     title: "Multi-intent fan-out",
@@ -28,8 +28,8 @@ const features = [
     body: "The 8 tools the LangGraph agent uses internally are also exposed via Anthropic's Model Context Protocol, so Claude Desktop (or any MCP client) can drive the same booking / records / history / search / audit operations.",
   },
   {
-    title: "Two-tier evaluation",
-    body: "Routing eval (14 cases — plumbing + safety classifier) plus adversarial eval (20 cases — jailbreaks, PHI isolation, dangerous advice, prompt injection, refusal quality). LLM-as-judge plus deterministic substring backstop; CI red-lines on safety < 3.",
+    title: "Fixture and model evaluation",
+    body: "Fourteen routing/state fixtures, a response-quality judge, and twenty adversarial examples cover selected behaviors. Provider mode and fallback use affect results. Passing these checks does not establish clinical safety or general correctness.",
   },
   {
     title: "Observability",
@@ -44,10 +44,10 @@ export default function AboutPage() {
           <div className="text-xs text-muted-foreground">About</div>
           <h1 className="mt-1 text-2xl font-semibold">Healthcare Assistant</h1>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-            LangGraph-backed agentic assistant: FHIR-grounded patient
-            lookups, PHI-audit-traceable tool calls, deterministic clinical
-            safety triage, multi-intent fan-out, exposed via MCP for
-            external clients.
+            A course prototype with synthetic patient records, mocked
+            scheduling, configurable FHIR access, an access log, and
+            rule-based emergency-message routing. LangGraph coordinates
+            the tools, which are also available through MCP.
           </p>
           <div className="mt-3 flex flex-wrap gap-1.5">
             <Badge variant="secondary">LangGraph</Badge>

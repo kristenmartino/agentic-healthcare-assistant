@@ -1,12 +1,16 @@
 # Capstone Writeup — Agentic Healthcare Assistant
 
+> Historical capstone narrative, updated to distinguish the original evaluation
+> from the current code. See [README evaluation](README.md#evaluation) for the
+> current 14-case fixture scope. The older PDF export is not a current test report.
+
 **Course**: Simplilearn Applied Generative AI Specialisation
 **Project 3**: Agentic Healthcare Assistant for Medical Task Automation
 **Date**: 2026-05-02
 
 ## Executive summary
 
-I built **Agentic Healthcare Assistant** — a multi-intent agentic system that performs **appointment booking, EHR record management, medical history retrieval, and medical-info search** through a single conversational interface. The architecture is a LangGraph router with parallel fan-out, RAG over patient PDFs via FAISS, structured memory via SqliteSaver keyed by `patient_id`, and a Streamlit UI surfacing the full state trace and tool log. A 10-case QAEvalChain-style evaluation passes all routing, state-shape, and tool-correctness checks at 100% with sub-second average latency.
+I built **Agentic Healthcare Assistant** — a multi-intent agentic system that performs **appointment booking, EHR record management, medical history retrieval, and medical-info search** through a single conversational interface. The architecture is a LangGraph router with parallel fan-out, RAG over patient PDFs via FAISS, structured memory via SqliteSaver keyed by `patient_id`, and a Streamlit UI surfacing the full state trace and tool log. The current routing evaluator defines 14 fixture cases. The original ten-case runs described below are historical observations, not a current pass rate or evidence of clinical safety.
 
 ## Problem framing
 
@@ -162,7 +166,7 @@ The eval is two-tier: deterministic routing/state checks plus an LLM-as-judge la
 
 ### Tier 1 — Routing + state shape (`eval/qa_eval.py`)
 
-Runs 10 ground-truth cases:
+The original ten-case evaluation is shown below for historical context. The current evaluator adds three emergency examples and an informational false-positive guard, for 14 cases:
 
 | ID | Query | Expected intents | Expected state keys |
 |---|---|---|---|
@@ -177,7 +181,7 @@ Runs 10 ground-truth cases:
 | multi-1 | The canonical "father with CKD" query | [booking, medical_search] | appointment + medical_info, specialty=nephrology |
 | general-1 | "Hello, what can you help me with?" | [general] | (no branch) |
 
-**Latest runs**:
+**Previously documented ten-case runs (not reverified for the current code)**:
 - stub LLM: 10/10 PASS, 0.6s/query
 - gpt-4o-mini: 10/10 PASS, 5.0s/query
 
@@ -187,7 +191,7 @@ Runs 10 ground-truth cases:
 
 The LLM scores each response 1-5 on three dimensions: **relevance** (addressed the ask), **accuracy** (claims supported by branch outputs, no hallucinated doctor names / dates / numbers), **tone** (warm, professional, includes disclaimer).
 
-**Latest run with gpt-4o-mini judge:**
+**Historical gpt-4o-mini judge run, 2026-05-04** ([committed ten-case artifact](eval/llm_judge_1777923152.json)):
 - relevance: 5.0 / 5
 - accuracy: 4.6 / 5
 - tone: 5.0 / 5
@@ -260,7 +264,7 @@ Mapped from the AGS Generative AI Governance course:
 | Tort liability for AI errors | (1) The assistant is informational only — disclaimer; (2) Booking is a mocked operation; in production it would require human verification before commit (human-over-the-loop pattern from VISA case study) |
 | IP / OSS license compliance | (1) `requirements.txt` lists every dep; (2) Llama 3.3 (Groq) usage is consistent with Meta's license terms; (3) all source code in this project is original |
 | Unauthorized employee use of GenAI | The project is a student capstone — no operational deployment. README warns against committing `.env` or pasting Simplilearn lab keys |
-| Regulatory compliance (ongoing) | Documented as a deployment-time concern in README; the architecture supports it (SqliteSaver checkpoints could be encrypted; audit logs are already structured JSON in `tool_log`) |
+| Regulatory compliance (ongoing) | Production requirements remain unverified. Checkpoints and structured logs alone do not establish regulatory compliance or an independent audit boundary. |
 | Severity × probability | Medical recommendations are high-severity; the system uses **human-over-the-loop** for the booking confirmation step (the mock returns a confirmation, but the prompt and disclaimer make clear a clinician should validate) |
 
 ## Limitations
@@ -285,6 +289,6 @@ Mapped from the AGS Generative AI Governance course:
 
 ## 1,200-character summary (for the LMS "Additional Remarks" field)
 
-> Built an Agentic Healthcare Assistant on LangGraph: 5-intent router (booking, records, history, medical-search, general) with parallel fan-out for multi-intent queries. Tools: mocked Doctor Schedule API, EHR over records.xlsx (cleaned 7→5 patients), FAISS RAG over sample patient PDFs, Tavily/DDG medical search constrained to MedlinePlus/WHO/CDC/NIH/Mayo. Memory: SqliteSaver keyed by patient_id. Two-tier eval: routing/state (10/10 PASS, gpt-4o-mini) and LLM-as-judge (R=5.0 A=4.6 T=5.0, overall 4.87/5). Streamlit multi-page: patient chat with state+tool-log panel and a doctor dashboard (today's schedule, per-doctor week, utilization chart, patient roster, slot manager). Stretch: MCP server exposing the tools to external Claude clients. Stack: langgraph, langchain-openai, faiss-cpu, sentence-transformers, pypdf, openpyxl, streamlit. Risks per the Governance course: hallucination (cited sources + disclaimer), HIPAA (synthetic data only), tort liability (human-over-the-loop booking). LLM-judge limitation: the judge itself hallucinated a "correct value" against an agent that was actually right — argues for 2-judge agreement.
+> Built an Agentic Healthcare Assistant on LangGraph: 5-intent router (booking, records, history, medical-search, general) with parallel fan-out for multi-intent queries. Tools: mocked Doctor Schedule API, EHR over records.xlsx (cleaned 7→5 patients), FAISS RAG over sample patient PDFs, Tavily/DDG medical search constrained to MedlinePlus/WHO/CDC/NIH/Mayo. Memory: SqliteSaver keyed by patient_id. Evaluation: 14 current routing/state fixtures, plus response-quality and adversarial evaluators. A historical ten-case gpt-4o-mini judge run averaged 4.87/5; this is not current-suite accuracy or clinical validation. Streamlit multi-page: patient chat with state+tool-log panel and a doctor dashboard (today's schedule, per-doctor week, utilization chart, patient roster, slot manager). Stretch: MCP server exposing the tools to external Claude clients. Stack: langgraph, langchain-openai, faiss-cpu, sentence-transformers, pypdf, openpyxl, streamlit. Risks per the Governance course: hallucination (cited sources + disclaimer), HIPAA (synthetic data only), tort liability (human-over-the-loop booking). LLM-judge limitation: the judge itself hallucinated a "correct value" against an agent that was actually right — argues for 2-judge agreement.
 
 (1,136 characters — 64 chars to spare under the 1,200-char field.)
