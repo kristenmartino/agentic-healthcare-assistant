@@ -2,17 +2,18 @@
 
 Capstone Project 3 for the Simplilearn Applied Generative AI Specialisation.
 
-A LangGraph-based agentic assistant that classifies user intent, fans out to up to four specialist branches (booking, records, history, medical search), retrieves over patient PDFs via FAISS-equivalent vector search, and composes a final response. Streamlit UI with cross-session memory via SqliteSaver. QAEvalChain-style evaluation with 10 ground-truth cases at 100% pass.
+A course prototype that routes requests to appointment, record, history, and medical-search tools using LangGraph. It includes Streamlit and Next.js interfaces, sample patient documents, and configurable model/search backends.
+
+The routing evaluator currently defines **14 fixture cases**. These check selected intents, state fields, tool results, and emergency-routing examples. Passing them does not establish general routing correctness, clinical safety, or production readiness. The demo uses synthetic patient data and mocked scheduling.
 
 ## Live demo
 
-▶ **[agentic-healthcare.kristenmartino.ai](https://agentic-healthcare.kristenmartino.ai)** — Next.js 15 + shadcn/ui frontend on Vercel, FastAPI backend on Fly.io. Token-streamed chat, FHIR-grounded patient lookups, PHI audit log, clinical safety triage. See [`web/README.md`](web/README.md).
+▶ **[agentic-healthcare.kristenmartino.ai](https://agentic-healthcare.kristenmartino.ai)** — Next.js 15 + shadcn/ui frontend on Vercel, FastAPI backend on Fly.io. Token-streamed chat, FHIR-grounded patient lookups, sample-patient access log, and rule-based emergency-message routing. See [`web/README.md`](web/README.md).
 
-▶ **[<!-- Streamlit Cloud URL --> healthcare-assistant.streamlit.app](https://healthcare-assistant.streamlit.app)** — same backend, Streamlit demo. 5-minute deploy via [`DEPLOY.md`](DEPLOY.md).
-
-▶ **2-minute UI walkthrough** — *(Loom URL after recording — see [`docs/UI_LOOM_SCRIPT.md`](docs/UI_LOOM_SCRIPT.md) for the talking-points script.)*
-
-▶ **MCP server demo** — Claude Desktop driving the assistant's 8 tools via MCP. *(Loom URL after recording — see [`mcp_server/CLAUDE_DESKTOP_SETUP.md`](mcp_server/CLAUDE_DESKTOP_SETUP.md) for the 90-second flow.)*
+The Streamlit interface can be run locally with `streamlit run app.py`.
+Walkthrough recordings are pending; scripts are available in
+[`docs/UI_LOOM_SCRIPT.md`](docs/UI_LOOM_SCRIPT.md) and
+[`mcp_server/CLAUDE_DESKTOP_SETUP.md`](mcp_server/CLAUDE_DESKTOP_SETUP.md).
 
 ## Architecture
 
@@ -114,7 +115,7 @@ docker compose up --build
 
 The compose stack runs a HAPI FHIR R4 server alongside the app and sets `EHR_BACKEND=fhir` so the app talks to it. To run against the bundled fixtures instead (no FHIR container needed), set `EHR_BACKEND=fhir_fixture` in your `.env`.
 
-The app **runs without any API key** — falls back to a deterministic stub LLM and DuckDuckGo (or stub search if DDG is rate-limited / TLS-blocked). All 10 eval cases still pass in stub mode because they grade routing + state shape, not LLM prose quality.
+The app **runs without any API key** — falls back to a deterministic stub LLM and DuckDuckGo (or stub search if DDG is rate-limited / TLS-blocked). Stub-mode evaluation checks selected routing and state behavior, not model answer quality. Run the current evaluator to measure results for your configuration.
 
 ## LLM provider
 
@@ -147,7 +148,7 @@ Pinned to the instructor's `requirements.txt` from `Datasets_New/Agentic Healthc
 | Vector index | `faiss-cpu` (preferred), numpy dot-product (fallback) | Same fallback rationale |
 | Persistence | `langgraph-checkpoint-sqlite` | NewsGenie precedent; SqliteSaver keyed by `thread_id = patient_id` |
 | Search | `ddgs` → `duckduckgo_search` → stub | Three-tier fallback; works offline if needed |
-| PDF | `pypdf` (preferred), `pdfminer.six` (fallback) | First fails on some PDFs; second always works |
+| PDF | `pypdf` (preferred), `pdfminer.six` (fallback) | Fallback parser; neither guarantees successful extraction |
 | Data | `openpyxl` | Required to read `records.xlsx` |
 | UI | `streamlit` | Required by problem statement |
 
@@ -190,7 +191,7 @@ History queries on the FHIR backends are enriched with the patient's active Cond
 
 ## PHI access audit log
 
-Every patient-identifiable read or write produces one row in `data/audit.sqlite` (`tools/audit.py`). This is the lightest credible implementation of HIPAA's "examine activity in systems containing ePHI" requirement (45 CFR 164.312(b)). The audit DB is intentionally separate from the EHR DB — in a real deployment they live in different trust boundaries so a compromise of the EHR doesn't silently wipe the audit trail.
+Every patient-identifiable read or write produces one row in `data/audit.sqlite` (`tools/audit.py`). This demonstrates an access-log pattern; it does not establish HIPAA compliance. The separate SQLite file is not an independent security boundary. Production protection would require access controls, protected storage, retention, and deployment review.
 
 Each event records:
 
@@ -248,7 +249,7 @@ HealthcareAssistant/
 │   └── __init__.py
 │
 ├── eval/
-│   ├── qa_eval.py                  # 10 ground-truth cases (routing + state shape)
+│   ├── qa_eval.py                  # 14 fixture cases (routing, state, emergency examples)
 │   └── llm_judge.py                # LLM-as-judge layer (relevance/accuracy/tone)
 │
 ├── data/                           # generated artifacts (gitignored)
@@ -269,21 +270,19 @@ The assistant has two fallback levels that allow it to run without external depe
 |---|---|---|
 | **Full** | Groq or OpenAI key set; ddgs reachable; sentence-transformers installed | Real LLM responses, real medical search, semantic embeddings |
 | **Partial** | No LLM key but ddgs works; or no ddgs but LLM works | Templated composer, real medical search; or LLM responses, stub search |
-| **Offline** | No LLM key, ddgs fails | Templated composer + stub search results; **routing and state-shape tests still pass** |
+| **Offline** | No LLM key, ddgs fails | Templated composer + stub search results; fixture checks can run without live model/search services |
 
-The 100% eval pass rate in stub mode demonstrates the architecture is correct independent of LLM quality. Real LLM = better prose, no impact on routing/tools.
+A passing stub-mode run supports only the included routing, state, and tool assertions for that backend. A real model can change intent classification, extracted arguments, tool choices, and responses; those paths need separate evaluation. Neither mode establishes clinical safety or general architectural correctness.
 
 ## Evaluation
 
-Two-tier eval. Both write timestamped JSON results files for traceability.
+Three evaluation layers write JSON artifacts. Report provider, model, case count, date, and fallback use with any result; the historical ten-case runs below are not current-suite results.
 
 ### Tier 1 — `python -m eval.qa_eval` — routing + state shape (deterministic)
 
-10 ground-truth cases covering 2 booking variants, 2 history queries, 2 record ops, 2 medical-info searches, 1 multi-intent (canonical CKD query), 1 general greeting. Grades: intent match, expected state keys non-empty, specialty correctness, name extraction, record-op correctness.
+The current `GROUND_TRUTH` list has 14 cases: the original ten booking/history/record/search/general examples, plus three emergency-routing examples and one informational false-positive guard. Checks include expected intents, non-empty state, appointment specialty, patient name, record operation, and emergency flags.
 
-Latest runs:
-- **stub LLM**: 10/10 PASS, 0.6s/query average
-- **gpt-4o-mini**: 10/10 PASS, 5.0s/query average
+The earlier ten-case runs documented for the capstone do not measure the current suite. Re-run `python -m eval.qa_eval` and retain its JSON output before reporting a current pass rate. Check `passed_with_stub_fallback` so an unavailable search backend is not mistaken for a successful live retrieval.
 
 ### Tier 3 — `python -m eval.adversarial` — safety, PHI isolation, prompt injection
 
@@ -300,12 +299,12 @@ A case passes when its weakest *key* dimension is ≥ 4. CI red-lines on any `sa
 
 ### Tier 2 — `python -m eval.llm_judge` — response quality (LLM-as-judge)
 
-Same 10 cases, but the LLM scores each response 1-5 on three dimensions:
+Uses the current `GROUND_TRUTH` cases and scores responses 1–5 on three dimensions:
 - **relevance**: addressed the user's actual ask
 - **accuracy**: factual claims supported by branch outputs (no hallucinated names/dates)
 - **tone**: warm, professional, includes disclaimer
 
-Skipped in stub mode (templates aren't representative). Latest with gpt-4o-mini: **R=5.0, A=4.6, T=5.0, overall 4.87/5**.
+Stub-mode scores are diagnostic placeholders. The [committed judge artifact](eval/llm_judge_1777923152.json), dated 2026-05-04, covers ten cases with gpt-4o-mini: **R=5.0, A=4.6, T=5.0, overall 4.87/5**. These are historical model-judge ratings, not current-suite accuracy or clinical validation.
 
 The accuracy score below 5 is itself instructive — see WRITEUP "Limitations of LLM-judge" for the case where the **judge** hallucinated a "correct value" rather than the agent.
 
@@ -370,7 +369,7 @@ Per `Course-end Project 3 - Agentic Healthcare Assistant for Medical Task Automa
 
 | Slot | What to upload |
 |---|---|
-| Writeup | `WRITEUP.md` (or PDF export) |
+| Writeup | `WRITEUP.md`; `WRITEUP.pdf` is the historical capstone export and predates these claim corrections |
 | Screenshots | Take from running Streamlit app — included in `screenshots/` |
 | Source Code | `zip -r healthcare_assistant.zip . -x ".venv/*" "data/*" ".env" "__pycache__/*" "**/__pycache__/*" "eval/results_*.json"` |
 | Links | This GitHub repo + optional Loom |

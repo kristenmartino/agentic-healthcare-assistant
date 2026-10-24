@@ -1,4 +1,4 @@
-"""QA evaluation: 10 ground-truth pairs covering every intent + multi-intent.
+"""QA evaluation: fixture cases for routing, state, and emergency examples.
 
 Two-tier evaluation:
 1. **Routing accuracy** — does the classifier produce the expected intent(s)?
@@ -31,7 +31,7 @@ from graph import build_workflow
 logger = logging.getLogger(__name__)
 
 
-# 10 ground-truth pairs covering all 5 intents + multi-intent.
+# Fixture cases for normal intents, multi-intent requests, and emergency guards.
 GROUND_TRUTH = [
     {
         "id": "booking-1",
