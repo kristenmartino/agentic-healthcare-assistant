@@ -29,9 +29,25 @@ ENV PATH="/opt/venv/bin:$PATH"
 # the api/ subdirectory.
 COPY requirements.txt /build/requirements.txt
 COPY api/requirements.txt /build/api/requirements.txt
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt -r api/requirements.txt && \
-    pip install --no-deps fastapi "uvicorn[standard]"
+
+# Skip sentence-transformers. It is what drags in torch, triton, transformers
+# and ~15 nvidia-* CUDA packages: the last deploy's pip step took 286s and the
+# image came out at 3.1 GB (deploy ~15 min, slow cold pulls).
+#
+# The deployed API never uses it. tools/vector_index.search_index returns []
+# as soon as data/faiss_chunks.json is missing, and nothing in this image (or
+# fly.toml, or CI) builds that index, so the embedding model is never loaded.
+# If the index is ever built in the image, the TF-IDF fallback in
+# vector_index.py (scikit-learn, declared in requirements.txt) is used instead.
+#
+# Filtering keeps requirements.txt the single source of truth, the same way CI
+# does it (.github/workflows/ci.yml). The grep -q fails the build loudly if the
+# line is ever renamed, instead of silently installing the CUDA stack again.
+RUN grep -q '^sentence-transformers' requirements.txt \
+    && grep -v '^sentence-transformers' requirements.txt > requirements-api.txt \
+    && pip install --upgrade pip setuptools wheel \
+    && pip install -r requirements-api.txt -r api/requirements.txt \
+    && pip install --no-deps fastapi "uvicorn[standard]"
 
 
 FROM python:3.11-slim AS final
